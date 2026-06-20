@@ -1,0 +1,8 @@
+cff-version: 1.2.0
+title: download_scielo-fulltext
+message: If you use this downloader, please cite the Swiss AI Apertus data pipeline.
+type: software
+authors:
+  - name: Swiss AI
+url: https://github.com/swiss-ai/download_scielo-fulltext
+license: Apache-2.0

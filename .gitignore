@@ -1,0 +1,33 @@
+.DS_Store
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.venv/
+venv/
+
+# Local operator state and generated corpus artifacts.
+tmp/
+logs/
+state/
+raw/
+index/
+data/
+manifests/
+manifest.jsonl
+manifest.parquet
+*.summary.json
+*.tmp
+*.tar
+*.jsonl
+*.jsonl.gz
+
+# Never commit proxy material or ad-hoc env files.
+.env
+.env.*
+!.env.example
+*proxy*
+*proxies*
+!docs/**/*.md
+!README.md
