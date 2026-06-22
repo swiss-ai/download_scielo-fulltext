@@ -250,6 +250,7 @@ def fetch_figure(
             args.contact_email,
             timeout=args.timeout,
             retries=args.figure_retries,
+            read_limit=(args.max_figure_bytes + 1) if args.max_figure_bytes else None,
         )
         if args.max_figure_bytes and len(data) > args.max_figure_bytes:
             return {

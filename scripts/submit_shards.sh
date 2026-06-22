@@ -25,6 +25,8 @@ REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-}"
 REQUEST_RETRIES="${REQUEST_RETRIES:-}"
 FIGURE_RETRIES="${FIGURE_RETRIES:-}"
 LOG_EVERY="${LOG_EVERY:-}"
+HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-}"
+MAX_FIGURE_BYTES="${MAX_FIGURE_BYTES:-}"
 
 usage() {
   cat <<EOF
@@ -54,6 +56,8 @@ Important env:
   REQUEST_RETRIES       Optional XML request retries per row
   FIGURE_RETRIES        Optional figure request retries per media URL
   LOG_EVERY             Optional row log interval for ok rows
+  HEARTBEAT_EVERY       Optional row heartbeat interval
+  MAX_FIGURE_BYTES      Optional max bytes per source figure before retry-queue
   MAX_SUBTARS           Optional smoke limiter per shard
 EOF
 }
@@ -152,6 +156,8 @@ echo "  download_workers=${DOWNLOAD_WORKERS}"
 [[ -n "${REQUEST_TIMEOUT}" ]] && echo "  request_timeout=${REQUEST_TIMEOUT}"
 [[ -n "${REQUEST_RETRIES}" ]] && echo "  request_retries=${REQUEST_RETRIES}"
 [[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
+[[ -n "${MAX_FIGURE_BYTES}" ]] && echo "  max_figure_bytes=${MAX_FIGURE_BYTES}"
+[[ -n "${HEARTBEAT_EVERY}" ]] && echo "  heartbeat_every=${HEARTBEAT_EVERY}"
 echo "  proxy_partitioning=enabled"
 [[ -n "${PROXY_FILE:-}" ]] && echo "  proxy_file configured"
 [[ -n "${SCIELO_CONTACT_EMAIL:-}${CONTACT_EMAIL:-}" ]] && echo "  contact identity configured"
@@ -183,6 +189,8 @@ for sid_int in "${IDS[@]}"; do
   [[ -n "${REQUEST_RETRIES}" ]] && append_export REQUEST_RETRIES "${REQUEST_RETRIES}"
   [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
   [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"
+  [[ -n "${HEARTBEAT_EVERY}" ]] && append_export HEARTBEAT_EVERY "${HEARTBEAT_EVERY}"
+  [[ -n "${MAX_FIGURE_BYTES}" ]] && append_export MAX_FIGURE_BYTES "${MAX_FIGURE_BYTES}"
   append_export PROXY_PARTITION_INDEX "${sid_int}"
   append_export PROXY_PARTITION_COUNT "${N_SHARDS}"
   append_export PROXY_FILE "${PROXY_FILE}"
