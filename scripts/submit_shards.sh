@@ -22,6 +22,7 @@ DOWNLOAD_WORKERS="${DOWNLOAD_WORKERS:-1}"
 MAX_SUBTARS="${MAX_SUBTARS:-}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-}"
+FIGURE_TIMEOUT="${FIGURE_TIMEOUT:-}"
 REQUEST_RETRIES="${REQUEST_RETRIES:-}"
 FIGURE_RETRIES="${FIGURE_RETRIES:-}"
 LOG_EVERY="${LOG_EVERY:-}"
@@ -53,6 +54,7 @@ Important env:
   RPM_PER_PROXY         Direct override for per-proxy RPM
   DOWNLOAD_WORKERS      Concurrent row workers per pod; one shared proxy limiter
   REQUEST_TIMEOUT       Optional per-request timeout in seconds
+  FIGURE_TIMEOUT        Optional figure-request timeout in seconds
   REQUEST_RETRIES       Optional XML request retries per row
   FIGURE_RETRIES        Optional figure request retries per media URL
   LOG_EVERY             Optional row log interval for ok rows
@@ -154,6 +156,7 @@ echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 echo "  rpm_per_proxy=${RPM_PER_PROXY}"
 echo "  download_workers=${DOWNLOAD_WORKERS}"
 [[ -n "${REQUEST_TIMEOUT}" ]] && echo "  request_timeout=${REQUEST_TIMEOUT}"
+[[ -n "${FIGURE_TIMEOUT}" ]] && echo "  figure_timeout=${FIGURE_TIMEOUT}"
 [[ -n "${REQUEST_RETRIES}" ]] && echo "  request_retries=${REQUEST_RETRIES}"
 [[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
 [[ -n "${MAX_FIGURE_BYTES}" ]] && echo "  max_figure_bytes=${MAX_FIGURE_BYTES}"
@@ -186,6 +189,7 @@ for sid_int in "${IDS[@]}"; do
   append_export RPM_PER_PROXY "${RPM_PER_PROXY}"
   append_export DOWNLOAD_WORKERS "${DOWNLOAD_WORKERS}"
   [[ -n "${REQUEST_TIMEOUT}" ]] && append_export REQUEST_TIMEOUT "${REQUEST_TIMEOUT}"
+  [[ -n "${FIGURE_TIMEOUT}" ]] && append_export FIGURE_TIMEOUT "${FIGURE_TIMEOUT}"
   [[ -n "${REQUEST_RETRIES}" ]] && append_export REQUEST_RETRIES "${REQUEST_RETRIES}"
   [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
   [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"

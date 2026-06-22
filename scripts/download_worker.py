@@ -248,7 +248,7 @@ def fetch_figure(
             idx,
             args.user_agent,
             args.contact_email,
-            timeout=args.timeout,
+            timeout=args.figure_timeout,
             retries=args.figure_retries,
             read_limit=(args.max_figure_bytes + 1) if args.max_figure_bytes else None,
         )
@@ -659,6 +659,7 @@ def main() -> int:
     p.add_argument("--subtar-id", type=int)
     p.add_argument("--max-subtars", type=int, default=0)
     p.add_argument("--timeout", type=int, default=int(os.environ.get("REQUEST_TIMEOUT", "90")))
+    p.add_argument("--figure-timeout", type=int, default=int(os.environ.get("FIGURE_TIMEOUT", os.environ.get("REQUEST_TIMEOUT", "90"))))
     p.add_argument("--retries", type=int, default=int(os.environ.get("REQUEST_RETRIES", "3")))
     p.add_argument("--figure-retries", type=int, default=int(os.environ.get("FIGURE_RETRIES", "3")))
     p.add_argument("--rpm-per-proxy", type=int, default=int(os.environ.get("RPM_PER_PROXY", "10")))
