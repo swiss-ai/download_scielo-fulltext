@@ -30,12 +30,21 @@ PROXY_PARTITION_COUNT=2 \
 python3 - <<'PY'
 import os
 import sys
+import tempfile
+from pathlib import Path
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "scripts"))
+from common import ProxyPool
 from common import require_proxies
 from common import xml_url_from_final
 
 proxies = require_proxies()
 assert proxies == ["http://127.0.0.2:8080/"], proxies
+with tempfile.TemporaryDirectory() as tmp:
+    pool = ProxyPool(["http://127.0.0.1:8080/"], 60000, shared_rate_dir=tmp)
+    proxy, limiter = pool.pick(0)
+    assert proxy == "http://127.0.0.1:8080/", proxy
+    limiter.wait()
+    assert list(Path(tmp).glob("*.rate"))
 old_style = xml_url_from_final(
     "http://www.scielo.org.bo/scielo.php?script=sci_arttext&pid=S1012-29662021000200265&tlng=es",
     "es",

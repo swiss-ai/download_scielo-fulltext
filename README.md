@@ -34,6 +34,12 @@ For parallel RCP runs, proxy lines can be partitioned with
 these automatically so full-shard runs preserve a global per-proxy budget instead
 of multiplying it by the number of workers.
 
+High-throughput runs can instead set `PROXY_PARTITIONING=0`. In that mode every
+pod receives the full proxy list and `PROXY_SHARED_RATE_DIR` coordinates a
+filesystem-backed per-proxy limiter across pods. This avoids leaving a pod's
+small proxy slice idle while that pod is resuming cached rows, assembling a
+subtar, or blocked on slow figure media.
+
 `DOWNLOAD_WORKERS` controls row-level concurrency inside each pod. Threads share
 the pod's proxy pool and per-proxy rate limiters, so concurrency can fill the
 assigned proxy quota without multiplying the configured RPM per proxy.

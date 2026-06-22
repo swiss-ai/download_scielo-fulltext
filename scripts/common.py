@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import gzip
 import collections
+import fcntl
 import hashlib
 import html
 import json
@@ -216,30 +217,128 @@ class RateLimiter:
     def __init__(self, rpm: int | None):
         self.rpm = rpm if rpm and rpm > 0 else None
         self.min_interval = 60.0 / self.rpm if self.rpm else 0.0
-        self._last = 0.0
+        self._next = 0.0
         self._lock = threading.Lock()
 
-    def wait(self) -> None:
+    def expected_wait(self) -> float:
         if not self.rpm:
-            return
+            return 0.0
         with self._lock:
             now = time.monotonic()
-            target = self._last + self.min_interval
-            if target > now:
-                time.sleep(target - now)
-            self._last = time.monotonic()
+            return max(0.0, self._next - now)
+
+    def reserve_wait(self) -> float:
+        if not self.rpm:
+            return 0.0
+        with self._lock:
+            now = time.monotonic()
+            start_at = max(now, self._next)
+            self._next = start_at + self.min_interval
+            return max(0.0, start_at - now)
+
+    def wait(self) -> float:
+        wait_s = self.reserve_wait()
+        if wait_s > 0:
+            time.sleep(wait_s)
+        return wait_s
+
+
+class SharedRateLimiter:
+    def __init__(self, rpm: int | None, state_dir: Path, proxy_url: str):
+        self.rpm = rpm if rpm and rpm > 0 else None
+        self.min_interval = 60.0 / self.rpm if self.rpm else 0.0
+        digest = hashlib.sha256(proxy_url.encode("utf-8")).hexdigest()[:24]
+        self.path = state_dir / f"{digest}.rate"
+        self._lock = threading.Lock()
+
+    @staticmethod
+    def _read_next(f) -> float:
+        f.seek(0)
+        raw = f.read().strip()
+        if not raw:
+            return 0.0
+        try:
+            return float(raw)
+        except ValueError:
+            return 0.0
+
+    def expected_wait(self) -> float:
+        if not self.rpm:
+            return 0.0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with self.path.open("a+", encoding="utf-8") as f:
+                try:
+                    fcntl.flock(f, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    return self.min_interval
+                last_started = self._read_next(f)
+                wait_s = max(0.0, last_started + self.min_interval - time.time())
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return wait_s
+
+    def reserve_wait(self) -> float:
+        return self.wait()
+
+    def wait(self) -> float:
+        if not self.rpm:
+            return 0.0
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self._lock:
+            with self.path.open("a+", encoding="utf-8") as f:
+                fcntl.flock(f, fcntl.LOCK_EX)
+                now = time.time()
+                last_started = self._read_next(f)
+                wait_s = max(0.0, last_started + self.min_interval - now)
+                if wait_s > 0:
+                    time.sleep(wait_s)
+                f.seek(0)
+                f.truncate()
+                f.write(f"{time.time():.6f}\n")
+                f.flush()
+                fcntl.flock(f, fcntl.LOCK_UN)
+                return wait_s
 
 
 class ProxyPool:
-    def __init__(self, proxies: list[str], rpm_per_proxy: int):
+    def __init__(self, proxies: list[str], rpm_per_proxy: int, shared_rate_dir: str | Path | None = None):
         if not proxies:
             raise ValueError("ProxyPool requires at least one proxy")
         self.proxies = proxies
         self.rpm_per_proxy = rpm_per_proxy
-        self.limiters = {proxy: RateLimiter(rpm_per_proxy) for proxy in proxies}
+        shared_raw = shared_rate_dir or os.environ.get("PROXY_SHARED_RATE_DIR") or os.environ.get("SHARED_PROXY_RATE_DIR")
+        self.shared_rate_dir = Path(shared_raw) if shared_raw else None
+        limiter_cls = SharedRateLimiter if self.shared_rate_dir else RateLimiter
+        self.limiters = {
+            proxy: (
+                limiter_cls(rpm_per_proxy, self.shared_rate_dir, proxy)
+                if self.shared_rate_dir
+                else limiter_cls(rpm_per_proxy)
+            )
+            for proxy in proxies
+        }
+        default_window = "16" if self.shared_rate_dir else "1"
+        try:
+            self.pick_window = max(1, int(os.environ.get("PROXY_PICK_WINDOW", default_window)))
+        except ValueError:
+            self.pick_window = int(default_window)
+        seed = os.environ.get("PROXY_POOL_OFFSET") or os.environ.get("SHARD_ID") or os.environ.get("RUNAI_JOB_NAME") or ""
+        self.offset = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16) if seed else random.randrange(len(proxies))
+
+    def _candidate_indices(self, url_index: int, attempt: int) -> list[int]:
+        n = len(self.proxies)
+        window = min(n, self.pick_window)
+        if window <= 1:
+            return [(url_index + attempt + self.offset) % n]
+        if self.shared_rate_dir:
+            return random.sample(range(n), window)
+        start = (url_index + attempt + self.offset) % n
+        return [(start + i) % n for i in range(window)]
 
     def pick(self, url_index: int, attempt: int = 0) -> tuple[str, RateLimiter]:
-        proxy = self.proxies[(url_index + attempt) % len(self.proxies)]
+        candidates = self._candidate_indices(url_index, attempt)
+        best_idx = min(candidates, key=lambda i: (self.limiters[self.proxies[i]].expected_wait(), i))
+        proxy = self.proxies[best_idx]
         return proxy, self.limiters[proxy]
 
 
@@ -277,7 +376,10 @@ def fetch_bytes(
         proxy, limiter = proxy_pool.pick(url_index, attempt)
         req = Request(url, headers=request_headers(user_agent, contact_email, extra_headers))
         try:
-            limiter.wait()
+            waited = limiter.wait()
+            if waited > 0:
+                add_fetch_stat("proxy_wait_events")
+                add_fetch_stat("proxy_wait_ms", int(waited * 1000))
             add_fetch_stat("requests_started")
             with opener_for_proxy(proxy).open(req, timeout=timeout) as resp:
                 if read_limit is None:

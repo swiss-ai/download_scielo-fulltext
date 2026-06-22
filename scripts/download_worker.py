@@ -562,6 +562,24 @@ def maybe_write_row_heartbeat(
     })
 
 
+def write_running_subtar_heartbeat(
+    corpus: Path,
+    shard_id: str,
+    sub_id: str,
+    total_rows: int,
+    rows_done: int,
+    counts: collections.Counter,
+) -> None:
+    write_shard_heartbeat(corpus, shard_id, {
+        "status": "running",
+        "current_subtar": sub_id,
+        "current_subtar_rows_done": rows_done,
+        "current_subtar_rows_total": total_rows,
+        "current_subtar_status_counts": dict(counts),
+        "request_stats": fetch_stats(),
+    })
+
+
 def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_pool: ProxyPool, args: argparse.Namespace) -> collections.Counter:
     rows = list(read_jsonl(plan))
     tar_path = corpus / "data" / f"shard-{shard_id}" / f"sub-{sub_id}.tar"
@@ -612,11 +630,17 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
             fill_pending(executor)
+            last_time_heartbeat = time.monotonic()
             while pending:
                 done, _ = concurrent.futures.wait(
                     pending,
+                    timeout=args.heartbeat_seconds if args.heartbeat_seconds else None,
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
+                if not done:
+                    write_running_subtar_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts)
+                    last_time_heartbeat = time.monotonic()
+                    continue
                 for fut in done:
                     idx = pending.pop(fut)
                     out = fut.result()
@@ -626,6 +650,9 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                     log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
                     maybe_write_row_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts, args)
                 fill_pending(executor)
+                if args.heartbeat_seconds and time.monotonic() - last_time_heartbeat >= args.heartbeat_seconds:
+                    write_running_subtar_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts)
+                    last_time_heartbeat = time.monotonic()
 
     assemble_subtar(tar_path, manifest_path, work_dir, out_rows)
     atomic_write_text(done_marker, compact_json({
@@ -681,6 +708,7 @@ def main() -> int:
     p.add_argument("--allow-third-party-caption-figures", action="store_true")
     p.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "100")))
     p.add_argument("--heartbeat-every", type=int, default=int(os.environ.get("HEARTBEAT_EVERY", "100")))
+    p.add_argument("--heartbeat-seconds", type=int, default=int(os.environ.get("HEARTBEAT_SECONDS", "30")))
     p.add_argument("--force", action="store_true")
     p.add_argument("--user-agent", default=None)
     p.add_argument("--contact-email", default=None)

@@ -19,6 +19,9 @@ NODE_TYPE="${NODE_TYPE:-}"
 TARGET_PROXY_RPM="${TARGET_PROXY_RPM:-10}"
 RPM_PER_PROXY="${RPM_PER_PROXY:-${TARGET_PROXY_RPM}}"
 DOWNLOAD_WORKERS="${DOWNLOAD_WORKERS:-1}"
+PROXY_PARTITIONING="${PROXY_PARTITIONING:-1}"
+PROXY_SHARED_RATE_DIR="${PROXY_SHARED_RATE_DIR:-}"
+PROXY_PICK_WINDOW="${PROXY_PICK_WINDOW:-}"
 MAX_SUBTARS="${MAX_SUBTARS:-}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-}"
@@ -27,6 +30,7 @@ REQUEST_RETRIES="${REQUEST_RETRIES:-}"
 FIGURE_RETRIES="${FIGURE_RETRIES:-}"
 LOG_EVERY="${LOG_EVERY:-}"
 HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-}"
+HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-}"
 MAX_FIGURE_BYTES="${MAX_FIGURE_BYTES:-}"
 
 usage() {
@@ -53,12 +57,18 @@ Important env:
   TARGET_PROXY_RPM      Desired request/minute budget per proxy
   RPM_PER_PROXY         Direct override for per-proxy RPM
   DOWNLOAD_WORKERS      Concurrent row workers per pod; one shared proxy limiter
+  PROXY_PARTITIONING    1 partitions proxies across shards; 0 uses full list with
+                        filesystem-backed shared limiter
+  PROXY_SHARED_RATE_DIR Shared limiter dir; defaults under CORPUS_ROOT when
+                        PROXY_PARTITIONING=0
+  PROXY_PICK_WINDOW     Candidate proxies considered per request in shared mode
   REQUEST_TIMEOUT       Optional per-request timeout in seconds
   FIGURE_TIMEOUT        Optional figure-request timeout in seconds
   REQUEST_RETRIES       Optional XML request retries per row
   FIGURE_RETRIES        Optional figure request retries per media URL
   LOG_EVERY             Optional row log interval for ok rows
   HEARTBEAT_EVERY       Optional row heartbeat interval
+  HEARTBEAT_SECONDS     Optional timer heartbeat interval
   MAX_FIGURE_BYTES      Optional max bytes per source figure before retry-queue
   MAX_SUBTARS           Optional smoke limiter per shard
 EOF
@@ -115,9 +125,16 @@ if [[ ! "${RPM_PER_PROXY}" =~ ^[0-9]+$ || "${RPM_PER_PROXY}" -lt 1 ]]; then
   echo "ERROR: RPM_PER_PROXY must be a positive integer." >&2
   exit 1
 fi
+if [[ "${PROXY_PARTITIONING}" != "0" && "${PROXY_PARTITIONING}" != "1" ]]; then
+  echo "ERROR: PROXY_PARTITIONING must be 0 or 1." >&2
+  exit 1
+fi
 
 N_SHARDS="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['n_shards'])")"
 PAD="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['pad_shard'])")"
+if [[ "${PROXY_PARTITIONING}" == "0" && -z "${PROXY_SHARED_RATE_DIR}" ]]; then
+  PROXY_SHARED_RATE_DIR="${CORPUS_ROOT}/state/proxy-rate"
+fi
 
 if [[ ${#EXPLICIT_IDS[@]} -eq 0 ]]; then
   if [[ "${YES_ALL}" != "1" ]]; then
@@ -155,13 +172,16 @@ echo "  image=${IMAGE} corpus=${CORPUS_ROOT}"
 echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 echo "  rpm_per_proxy=${RPM_PER_PROXY}"
 echo "  download_workers=${DOWNLOAD_WORKERS}"
+echo "  proxy_partitioning=${PROXY_PARTITIONING}"
+[[ -n "${PROXY_SHARED_RATE_DIR}" ]] && echo "  proxy_shared_rate_dir=${PROXY_SHARED_RATE_DIR}"
+[[ -n "${PROXY_PICK_WINDOW}" ]] && echo "  proxy_pick_window=${PROXY_PICK_WINDOW}"
 [[ -n "${REQUEST_TIMEOUT}" ]] && echo "  request_timeout=${REQUEST_TIMEOUT}"
 [[ -n "${FIGURE_TIMEOUT}" ]] && echo "  figure_timeout=${FIGURE_TIMEOUT}"
 [[ -n "${REQUEST_RETRIES}" ]] && echo "  request_retries=${REQUEST_RETRIES}"
 [[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
 [[ -n "${MAX_FIGURE_BYTES}" ]] && echo "  max_figure_bytes=${MAX_FIGURE_BYTES}"
 [[ -n "${HEARTBEAT_EVERY}" ]] && echo "  heartbeat_every=${HEARTBEAT_EVERY}"
-echo "  proxy_partitioning=enabled"
+[[ -n "${HEARTBEAT_SECONDS}" ]] && echo "  heartbeat_seconds=${HEARTBEAT_SECONDS}"
 [[ -n "${PROXY_FILE:-}" ]] && echo "  proxy_file configured"
 [[ -n "${SCIELO_CONTACT_EMAIL:-}${CONTACT_EMAIL:-}" ]] && echo "  contact identity configured"
 [[ -n "${SCIELO_USER_AGENT:-}" ]] && echo "  custom user-agent configured"
@@ -188,15 +208,20 @@ for sid_int in "${IDS[@]}"; do
   append_export RCP_USER "${RCP_USER}"
   append_export RPM_PER_PROXY "${RPM_PER_PROXY}"
   append_export DOWNLOAD_WORKERS "${DOWNLOAD_WORKERS}"
+  [[ -n "${PROXY_SHARED_RATE_DIR}" ]] && append_export PROXY_SHARED_RATE_DIR "${PROXY_SHARED_RATE_DIR}"
+  [[ -n "${PROXY_PICK_WINDOW}" ]] && append_export PROXY_PICK_WINDOW "${PROXY_PICK_WINDOW}"
   [[ -n "${REQUEST_TIMEOUT}" ]] && append_export REQUEST_TIMEOUT "${REQUEST_TIMEOUT}"
   [[ -n "${FIGURE_TIMEOUT}" ]] && append_export FIGURE_TIMEOUT "${FIGURE_TIMEOUT}"
   [[ -n "${REQUEST_RETRIES}" ]] && append_export REQUEST_RETRIES "${REQUEST_RETRIES}"
   [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
   [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"
   [[ -n "${HEARTBEAT_EVERY}" ]] && append_export HEARTBEAT_EVERY "${HEARTBEAT_EVERY}"
+  [[ -n "${HEARTBEAT_SECONDS}" ]] && append_export HEARTBEAT_SECONDS "${HEARTBEAT_SECONDS}"
   [[ -n "${MAX_FIGURE_BYTES}" ]] && append_export MAX_FIGURE_BYTES "${MAX_FIGURE_BYTES}"
-  append_export PROXY_PARTITION_INDEX "${sid_int}"
-  append_export PROXY_PARTITION_COUNT "${N_SHARDS}"
+  if [[ "${PROXY_PARTITIONING}" == "1" ]]; then
+    append_export PROXY_PARTITION_INDEX "${sid_int}"
+    append_export PROXY_PARTITION_COUNT "${N_SHARDS}"
+  fi
   append_export PROXY_FILE "${PROXY_FILE}"
   append_export MIN_FREE_GB "${MIN_FREE_GB}"
   if [[ -n "${MAX_SUBTARS:-}" ]]; then
