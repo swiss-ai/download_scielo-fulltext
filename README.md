@@ -8,8 +8,10 @@ The source surface is indirect:
    `https://articlemeta.scielo.org/api/v1/article/identifiers/`
 2. Per-article ArticleMeta records with `body=true`, used to discover full-text
    HTML URLs.
-3. Final SciELO OPAC article URLs resolved from those HTML URLs.
-4. Canonical XML fetched from the final OPAC URL with `?format=xml&lang=...`.
+3. Canonical XML endpoints derived from those HTML URLs. Modern OPAC URLs use
+   `?format=xml&lang=...`; legacy `scielo.php?script=sci_arttext&pid=...`
+   URLs use the SciELO `articleXML.php` endpoint. The worker can fall back to
+   resolving final HTML URLs for edge cases.
 
 This repo follows the operational style of `download_copernicus-publications`:
 raw source pages, explicit manifests, deterministic shard plans, tar packing,
@@ -31,6 +33,10 @@ For parallel RCP runs, proxy lines can be partitioned with
 `PROXY_PARTITION_INDEX` and `PROXY_PARTITION_COUNT`. The submit helpers set
 these automatically so full-shard runs preserve a global per-proxy budget instead
 of multiplying it by the number of workers.
+
+`DOWNLOAD_WORKERS` controls row-level concurrency inside each pod. Threads share
+the pod's proxy pool and per-proxy rate limiters, so concurrency can fill the
+assigned proxy quota without multiplying the configured RPM per proxy.
 
 ## Quick Smoke
 

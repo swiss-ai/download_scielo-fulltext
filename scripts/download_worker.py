@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import concurrent.futures
 import collections
 import hashlib
 import io
@@ -180,9 +181,12 @@ def resolve_final_url(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse
     return final_url
 
 
-def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> tuple[bytes, str, int, dict]:
-    final_url = resolve_final_url(row, proxy_pool, idx, args)
-    xml_url = xml_url_from_final(final_url, row.get("preferred_lang") or "")
+def fetch_xml_url(
+    xml_url: str,
+    proxy_pool: ProxyPool,
+    idx: int,
+    args: argparse.Namespace,
+) -> tuple[bytes, str, int, dict]:
     data, headers, final, status = fetch_bytes(
         xml_url,
         proxy_pool,
@@ -196,6 +200,29 @@ def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespa
     if not is_xml_response(data, headers):
         raise ValueError(f"xml_html_response:{headers.get('Content-Type', '')}")
     return data, xml_url, status, headers
+
+
+def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> tuple[bytes, str, int, dict]:
+    preferred_lang = row.get("preferred_lang") or ""
+    html_url = row["fulltext_html_url"]
+    if args.resolve_final_url:
+        final_url = resolve_final_url(row, proxy_pool, idx, args)
+        return fetch_xml_url(xml_url_from_final(final_url, preferred_lang), proxy_pool, idx, args)
+
+    xml_url = xml_url_from_final(html_url, preferred_lang)
+    direct_error: Exception | None = None
+    try:
+        return fetch_xml_url(xml_url, proxy_pool, idx, args)
+    except Exception as exc:
+        direct_error = exc
+        if not args.xml_resolve_fallback:
+            raise
+
+    final_url = resolve_final_url(row, proxy_pool, idx, args)
+    fallback_url = xml_url_from_final(final_url, preferred_lang)
+    if fallback_url == xml_url:
+        raise direct_error
+    return fetch_xml_url(fallback_url, proxy_pool, idx, args)
 
 
 def fetch_figure(
@@ -277,7 +304,7 @@ def article_text_chars(article: ET.Element) -> tuple[int, int]:
     return len(text_of(article)), sum(len(text_of(el)) for el in iter_by_local(article, "body"))
 
 
-def process_row(row: dict, tar: tarfile.TarFile, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
     sid = row.get("source_id") or source_id(row.get("collection", ""), row.get("pid", ""), row.get("doi", ""))
     prefix = sid
     base_out = {
@@ -377,11 +404,6 @@ def process_row(row: dict, tar: tarfile.TarFile, tar_rel: str, proxy_pool: Proxy
         "license_urls": lic_urls,
         "downloaded_at": iso_utc_now(),
     }
-    tar_add_bytes(tar, xml_member, packaged_xml)
-    tar_add_bytes(tar, source_member, compact_json(source_payload).encode("utf-8") + b"\n")
-    for member, data in figure_files:
-        tar_add_bytes(tar, member, data)
-
     expected = len(urls)
     downloaded = len(figure_files)
     status = "ok" if expected == downloaded else ("partial_figures" if downloaded else ("no_figures" if expected == 0 else "figures_failed"))
@@ -414,7 +436,81 @@ def process_row(row: dict, tar: tarfile.TarFile, tar_rel: str, proxy_pool: Proxy
         "figures": figure_manifest,
         "third_party_caption_flag": third_party_flag,
         "third_party_caption_terms": third_party_terms,
+        "_files": [
+            (xml_member, packaged_xml),
+            (source_member, compact_json(source_payload).encode("utf-8") + b"\n"),
+            *figure_files,
+        ],
     }
+
+
+def write_result_files(tar: tarfile.TarFile, out: dict) -> None:
+    for member, data in out.pop("_files", []):
+        tar_add_bytes(tar, member, data)
+
+
+def row_cache_paths(work_dir: Path, idx: int) -> tuple[Path, Path]:
+    stem = f"row-{idx:06d}"
+    return work_dir / f"{stem}.json", work_dir / f"{stem}.tar"
+
+
+def write_row_cache(work_dir: Path, idx: int, out: dict) -> dict:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    manifest_path, payload_path = row_cache_paths(work_dir, idx)
+    files = out.pop("_files", [])
+    cache_out = dict(out)
+    cache_out["_payload_tar"] = bool(files)
+    if files:
+        payload_tmp = payload_path.with_suffix(payload_path.suffix + f".tmp.{os.getpid()}")
+        with tarfile.open(payload_tmp, "w") as payload_tar:
+            for member, data in files:
+                tar_add_bytes(payload_tar, member, data)
+        payload_tmp.replace(payload_path)
+    atomic_write_text(manifest_path, compact_json(cache_out) + "\n")
+    return cache_out
+
+
+def read_row_cache(work_dir: Path, idx: int) -> dict | None:
+    manifest_path, payload_path = row_cache_paths(work_dir, idx)
+    if not manifest_path.exists():
+        return None
+    try:
+        out = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if out.get("_payload_tar") and not payload_path.exists():
+        return None
+    return out
+
+
+def final_manifest_row(row: dict) -> dict:
+    return {k: v for k, v in row.items() if not k.startswith("_")}
+
+
+def append_payload_tar(final_tar: tarfile.TarFile, payload_path: Path) -> None:
+    with tarfile.open(payload_path, "r") as payload_tar:
+        for member in payload_tar.getmembers():
+            source = payload_tar.extractfile(member) if member.isfile() else None
+            final_tar.addfile(member, source)
+
+
+def assemble_subtar(tar_path: Path, manifest_path: Path, work_dir: Path, out_rows: list[dict | None]) -> None:
+    missing = [i for i, row in enumerate(out_rows) if row is None]
+    if missing:
+        raise RuntimeError(f"cannot assemble subtar with missing row caches: {missing[:10]}")
+    tar_tmp = tar_path.with_suffix(tar_path.suffix + f".tmp.{os.getpid()}")
+    with tarfile.open(tar_tmp, "w") as final_tar:
+        for idx, row in enumerate(out_rows):
+            if row and row.get("_payload_tar"):
+                _, payload_path = row_cache_paths(work_dir, idx)
+                append_payload_tar(final_tar, payload_path)
+    tar_tmp.replace(tar_path)
+    write_jsonl(manifest_path, [final_manifest_row(row) for row in out_rows if row is not None])
+
+
+def log_row_result(shard_id: str, sub_id: str, idx: int, total_rows: int, out: dict, args: argparse.Namespace) -> None:
+    if args.log_every and ((idx + 1) % args.log_every == 0 or out["status"] != "ok"):
+        log(f"shard {shard_id} sub {sub_id} row {idx + 1}/{total_rows} {out.get('source_id')}: {out['status']}")
 
 
 def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_pool: ProxyPool, args: argparse.Namespace) -> collections.Counter:
@@ -422,23 +518,65 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
     tar_path = corpus / "data" / f"shard-{shard_id}" / f"sub-{sub_id}.tar"
     manifest_path = corpus / "manifests" / f"shard-{shard_id}" / f"sub-{sub_id}.jsonl"
     done_marker = corpus / "state" / f"shard-{shard_id}" / f"sub-{sub_id}.done"
+    work_dir = corpus / "state" / f"shard-{shard_id}" / f"sub-{sub_id}.work"
     if done_marker.exists() and not args.force:
+        if work_dir.exists():
+            shutil.rmtree(work_dir)
         log(f"skip done {done_marker}")
         return collections.Counter({"skipped_done": len(rows)})
     tar_path.parent.mkdir(parents=True, exist_ok=True)
-    tar_tmp = tar_path.with_suffix(tar_path.suffix + f".tmp.{os.getpid()}")
     tar_rel = str(tar_path.relative_to(corpus))
-    out_rows = []
+    out_rows: list[dict | None] = [None] * len(rows)
     counts = collections.Counter()
-    with tarfile.open(tar_tmp, "w") as tar:
-        for idx, row in enumerate(rows):
-            out = process_row(row, tar, tar_rel, proxy_pool, idx, args)
-            out_rows.append(out)
-            counts[out["status"]] += 1
-            if args.log_every and ((idx + 1) % args.log_every == 0 or out["status"] != "ok"):
-                log(f"shard {shard_id} sub {sub_id} row {idx + 1}/{len(rows)} {out.get('source_id')}: {out['status']}")
-    tar_tmp.replace(tar_path)
-    write_jsonl(manifest_path, out_rows)
+
+    missing_indices = []
+    for idx in range(len(rows)):
+        cached = read_row_cache(work_dir, idx)
+        if cached is None:
+            missing_indices.append(idx)
+            continue
+        out_rows[idx] = cached
+        counts[cached["status"]] += 1
+    if missing_indices and len(missing_indices) != len(rows):
+        log(f"resume shard {shard_id} sub {sub_id}: cached {len(rows) - len(missing_indices)}/{len(rows)} rows")
+
+    if args.workers <= 1:
+        for idx in missing_indices:
+            out = process_row(rows[idx], tar_rel, proxy_pool, idx, args)
+            cached = write_row_cache(work_dir, idx, out)
+            out_rows[idx] = cached
+            counts[cached["status"]] += 1
+            log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
+    else:
+        pending: dict[concurrent.futures.Future[dict], int] = {}
+        missing_pos = 0
+        max_pending = max(args.workers, args.workers * 2)
+
+        def fill_pending(executor: concurrent.futures.Executor) -> None:
+            nonlocal missing_pos
+            while missing_pos < len(missing_indices) and len(pending) < max_pending:
+                idx = missing_indices[missing_pos]
+                fut = executor.submit(process_row, rows[idx], tar_rel, proxy_pool, idx, args)
+                pending[fut] = idx
+                missing_pos += 1
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
+            fill_pending(executor)
+            while pending:
+                done, _ = concurrent.futures.wait(
+                    pending,
+                    return_when=concurrent.futures.FIRST_COMPLETED,
+                )
+                for fut in done:
+                    idx = pending.pop(fut)
+                    out = fut.result()
+                    cached = write_row_cache(work_dir, idx, out)
+                    out_rows[idx] = cached
+                    counts[cached["status"]] += 1
+                    log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
+                fill_pending(executor)
+
+    assemble_subtar(tar_path, manifest_path, work_dir, out_rows)
     atomic_write_text(done_marker, compact_json({
         "finished_at": iso_utc_now(),
         "host": socket.gethostname(),
@@ -447,6 +585,7 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
         "manifest": str(manifest_path),
         "status_counts": dict(counts),
     }) + "\n")
+    shutil.rmtree(work_dir, ignore_errors=True)
     return counts
 
 
@@ -471,6 +610,9 @@ def main() -> int:
     p.add_argument("--retries", type=int, default=int(os.environ.get("REQUEST_RETRIES", "3")))
     p.add_argument("--figure-retries", type=int, default=int(os.environ.get("FIGURE_RETRIES", "3")))
     p.add_argument("--rpm-per-proxy", type=int, default=int(os.environ.get("RPM_PER_PROXY", "10")))
+    p.add_argument("--workers", type=int, default=int(os.environ.get("DOWNLOAD_WORKERS", "1")))
+    p.add_argument("--resolve-final-url", action=argparse.BooleanOptionalAction, default=os.environ.get("RESOLVE_FINAL_URL", "0") == "1")
+    p.add_argument("--xml-resolve-fallback", action=argparse.BooleanOptionalAction, default=os.environ.get("XML_RESOLVE_FALLBACK", "1") != "0")
     p.add_argument("--max-figure-bytes", type=int, default=int(os.environ.get("MAX_FIGURE_BYTES", str(200 * 1024 * 1024))))
     p.add_argument("--render-tiff", action=argparse.BooleanOptionalAction, default=os.environ.get("RENDER_TIFF", "1") != "0")
     p.add_argument("--normalize-large-raster", action=argparse.BooleanOptionalAction, default=os.environ.get("NORMALIZE_LARGE_RASTER", "1") != "0")

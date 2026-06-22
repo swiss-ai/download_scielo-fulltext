@@ -18,6 +18,7 @@ MEMORY_PER_POD="${MEMORY_PER_POD:-16G}"
 NODE_TYPE="${NODE_TYPE:-}"
 TARGET_PROXY_RPM="${TARGET_PROXY_RPM:-10}"
 RPM_PER_PROXY="${RPM_PER_PROXY:-${TARGET_PROXY_RPM}}"
+DOWNLOAD_WORKERS="${DOWNLOAD_WORKERS:-1}"
 MAX_SUBTARS="${MAX_SUBTARS:-}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
 
@@ -44,6 +45,7 @@ Important env:
   SCIELO_CONTACT_EMAIL  Contact identity for request headers
   TARGET_PROXY_RPM      Desired request/minute budget per proxy
   RPM_PER_PROXY         Direct override for per-proxy RPM
+  DOWNLOAD_WORKERS      Concurrent row workers per pod; one shared proxy limiter
   MAX_SUBTARS           Optional smoke limiter per shard
 EOF
 }
@@ -138,6 +140,7 @@ echo "Submitting ${#IDS[@]} of ${N_SHARDS} shard(s): ${IDS[*]}"
 echo "  image=${IMAGE} corpus=${CORPUS_ROOT}"
 echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 echo "  rpm_per_proxy=${RPM_PER_PROXY}"
+echo "  download_workers=${DOWNLOAD_WORKERS}"
 echo "  proxy_partitioning=enabled"
 [[ -n "${PROXY_FILE:-}" ]] && echo "  proxy_file configured"
 [[ -n "${SCIELO_CONTACT_EMAIL:-}${CONTACT_EMAIL:-}" ]] && echo "  contact identity configured"
@@ -164,6 +167,7 @@ for sid_int in "${IDS[@]}"; do
   append_export REPO_DIR "${POD_REPO_DIR}"
   append_export RCP_USER "${RCP_USER}"
   append_export RPM_PER_PROXY "${RPM_PER_PROXY}"
+  append_export DOWNLOAD_WORKERS "${DOWNLOAD_WORKERS}"
   append_export PROXY_PARTITION_INDEX "${sid_int}"
   append_export PROXY_PARTITION_COUNT "${N_SHARDS}"
   append_export PROXY_FILE "${PROXY_FILE}"
