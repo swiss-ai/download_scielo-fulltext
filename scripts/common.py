@@ -355,7 +355,17 @@ def choose_fulltext(fulltexts: dict) -> tuple[str, str]:
 def xml_url_from_final(final_url: str, lang: str) -> str:
     split = urlsplit(final_url)
     query = parse_qs(split.query)
-    chosen_lang = (lang or (query.get("lang") or query.get("tlng") or ["en"])[0] or "en")
+    chosen_lang = (lang or (query.get("lang") or query.get("tlng") or query.get("lng") or ["en"])[0] or "en")
+    pid = (query.get("pid") or [""])[0]
+    script = (query.get("script") or [""])[0]
+    if split.path.endswith("/scielo.php") and pid and script == "sci_arttext":
+        return urlunsplit((
+            split.scheme,
+            split.netloc,
+            "/scieloOrg/php/articleXML.php",
+            urlencode({"pid": pid, "lang": chosen_lang}),
+            "",
+        ))
     new_query = urlencode({"format": "xml", "lang": chosen_lang})
     return urlunsplit((split.scheme, split.netloc, split.path, new_query, ""))
 

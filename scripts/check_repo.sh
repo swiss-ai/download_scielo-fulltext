@@ -32,9 +32,20 @@ import os
 import sys
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "scripts"))
 from common import require_proxies
+from common import xml_url_from_final
 
 proxies = require_proxies()
 assert proxies == ["http://127.0.0.2:8080/"], proxies
+old_style = xml_url_from_final(
+    "http://www.scielo.org.bo/scielo.php?script=sci_arttext&pid=S1012-29662021000200265&tlng=es",
+    "es",
+)
+assert old_style == (
+    "http://www.scielo.org.bo/scieloOrg/php/articleXML.php?"
+    "pid=S1012-29662021000200265&lang=es"
+), old_style
+modern = xml_url_from_final("https://www.scielo.br/j/abc/a/example/?lang=en", "en")
+assert modern == "https://www.scielo.br/j/abc/a/example/?format=xml&lang=en", modern
 PY
 
 if git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
