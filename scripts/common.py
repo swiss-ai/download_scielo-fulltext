@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from http.client import IncompleteRead
+from http.client import HTTPException, IncompleteRead
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlsplit, urlunsplit, unquote
@@ -274,7 +274,7 @@ def fetch_bytes(
                 retry_sleep(attempt, retry_after=retry_after)
                 continue
             raise
-        except (URLError, TimeoutError, OSError, IncompleteRead) as e:
+        except (URLError, TimeoutError, OSError, HTTPException) as e:
             last_error = e
             if attempt < retries:
                 retry_sleep(attempt)

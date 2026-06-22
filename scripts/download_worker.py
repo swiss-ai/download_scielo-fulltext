@@ -14,6 +14,7 @@ import socket
 import tarfile
 import time
 import xml.etree.ElementTree as ET
+from http.client import HTTPException
 from pathlib import Path
 from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
@@ -303,7 +304,7 @@ def fetch_figure(
         }
     except HTTPError as e:
         return {"url": url, "member": member, "status": "error", "http_status": e.code, "error": f"HTTP {e.code}"}
-    except (URLError, TimeoutError, OSError, ValueError) as e:
+    except (URLError, TimeoutError, OSError, HTTPException, ValueError) as e:
         return {"url": url, "member": member, "status": "error", "error": type(e).__name__}
 
 
