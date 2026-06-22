@@ -215,7 +215,14 @@ def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespa
         return fetch_xml_url(xml_url, proxy_pool, idx, args)
     except Exception as exc:
         direct_error = exc
-        if not args.xml_resolve_fallback:
+        should_fallback = (
+            isinstance(exc, ValueError)
+            and str(exc).startswith("xml_html_response")
+        ) or (
+            isinstance(exc, HTTPError)
+            and exc.code in {404}
+        )
+        if not args.xml_resolve_fallback or not should_fallback:
             raise
 
     final_url = resolve_final_url(row, proxy_pool, idx, args)

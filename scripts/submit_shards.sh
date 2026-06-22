@@ -21,6 +21,10 @@ RPM_PER_PROXY="${RPM_PER_PROXY:-${TARGET_PROXY_RPM}}"
 DOWNLOAD_WORKERS="${DOWNLOAD_WORKERS:-1}"
 MAX_SUBTARS="${MAX_SUBTARS:-}"
 MIN_FREE_GB="${MIN_FREE_GB:-50}"
+REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-}"
+REQUEST_RETRIES="${REQUEST_RETRIES:-}"
+FIGURE_RETRIES="${FIGURE_RETRIES:-}"
+LOG_EVERY="${LOG_EVERY:-}"
 
 usage() {
   cat <<EOF
@@ -46,6 +50,10 @@ Important env:
   TARGET_PROXY_RPM      Desired request/minute budget per proxy
   RPM_PER_PROXY         Direct override for per-proxy RPM
   DOWNLOAD_WORKERS      Concurrent row workers per pod; one shared proxy limiter
+  REQUEST_TIMEOUT       Optional per-request timeout in seconds
+  REQUEST_RETRIES       Optional XML request retries per row
+  FIGURE_RETRIES        Optional figure request retries per media URL
+  LOG_EVERY             Optional row log interval for ok rows
   MAX_SUBTARS           Optional smoke limiter per shard
 EOF
 }
@@ -141,6 +149,9 @@ echo "  image=${IMAGE} corpus=${CORPUS_ROOT}"
 echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 echo "  rpm_per_proxy=${RPM_PER_PROXY}"
 echo "  download_workers=${DOWNLOAD_WORKERS}"
+[[ -n "${REQUEST_TIMEOUT}" ]] && echo "  request_timeout=${REQUEST_TIMEOUT}"
+[[ -n "${REQUEST_RETRIES}" ]] && echo "  request_retries=${REQUEST_RETRIES}"
+[[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
 echo "  proxy_partitioning=enabled"
 [[ -n "${PROXY_FILE:-}" ]] && echo "  proxy_file configured"
 [[ -n "${SCIELO_CONTACT_EMAIL:-}${CONTACT_EMAIL:-}" ]] && echo "  contact identity configured"
@@ -168,6 +179,10 @@ for sid_int in "${IDS[@]}"; do
   append_export RCP_USER "${RCP_USER}"
   append_export RPM_PER_PROXY "${RPM_PER_PROXY}"
   append_export DOWNLOAD_WORKERS "${DOWNLOAD_WORKERS}"
+  [[ -n "${REQUEST_TIMEOUT}" ]] && append_export REQUEST_TIMEOUT "${REQUEST_TIMEOUT}"
+  [[ -n "${REQUEST_RETRIES}" ]] && append_export REQUEST_RETRIES "${REQUEST_RETRIES}"
+  [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
+  [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"
   append_export PROXY_PARTITION_INDEX "${sid_int}"
   append_export PROXY_PARTITION_COUNT "${N_SHARDS}"
   append_export PROXY_FILE "${PROXY_FILE}"
