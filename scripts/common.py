@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import gzip
+import collections
 import hashlib
 import html
 import json
@@ -22,6 +23,23 @@ from urllib.request import ProxyHandler, Request, build_opener
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
 DEFAULT_USER_AGENT_PRODUCT = "SwissAI-Apertus-SciELODownloader/0.1"
 TRANSIENT_HTTP = {408, 409, 425, 429, 500, 502, 503, 504, 520, 521, 522, 523, 524}
+_FETCH_STATS = collections.Counter()
+_FETCH_STATS_LOCK = threading.Lock()
+
+
+def add_fetch_stat(key: str, value: int = 1) -> None:
+    with _FETCH_STATS_LOCK:
+        _FETCH_STATS[key] += value
+
+
+def fetch_stats() -> dict[str, int]:
+    with _FETCH_STATS_LOCK:
+        return dict(_FETCH_STATS)
+
+
+def reset_fetch_stats() -> None:
+    with _FETCH_STATS_LOCK:
+        _FETCH_STATS.clear()
 
 
 def iso_utc_now() -> str:
@@ -260,13 +278,19 @@ def fetch_bytes(
         req = Request(url, headers=request_headers(user_agent, contact_email, extra_headers))
         try:
             limiter.wait()
+            add_fetch_stat("requests_started")
             with opener_for_proxy(proxy).open(req, timeout=timeout) as resp:
                 if read_limit is None:
                     data = resp.read()
                 else:
                     data = resp.read(read_limit)
+                add_fetch_stat("requests_ok")
+                add_fetch_stat(f"http_status_{resp.getcode()}")
+                add_fetch_stat("bytes_read", len(data))
                 return data, dict(resp.headers.items()), resp.geturl(), resp.getcode()
         except HTTPError as e:
+            add_fetch_stat("requests_http_error")
+            add_fetch_stat(f"http_status_{e.code}")
             last_error = e
             retryable = e.code in TRANSIENT_HTTP or e.code in {403}
             retry_after = retry_after_seconds(e.headers)
@@ -275,6 +299,8 @@ def fetch_bytes(
                 continue
             raise
         except (URLError, TimeoutError, OSError, HTTPException) as e:
+            add_fetch_stat("requests_network_error")
+            add_fetch_stat(f"network_error_{type(e).__name__}")
             last_error = e
             if attempt < retries:
                 retry_sleep(attempt)

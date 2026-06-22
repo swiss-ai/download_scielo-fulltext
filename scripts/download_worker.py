@@ -27,6 +27,7 @@ from common import (
     compact_json,
     contact_email_from_env,
     fetch_bytes,
+    fetch_stats,
     first_text,
     iso_utc_now,
     license_info,
@@ -312,10 +313,9 @@ def article_text_chars(article: ET.Element) -> tuple[int, int]:
     return len(text_of(article)), sum(len(text_of(el)) for el in iter_by_local(article, "body"))
 
 
-def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+def base_row_result(row: dict, tar_rel: str) -> dict:
     sid = row.get("source_id") or source_id(row.get("collection", ""), row.get("pid", ""), row.get("doi", ""))
-    prefix = sid
-    base_out = {
+    return {
         "source": "scielo",
         "source_id": sid,
         "pid": row.get("pid", ""),
@@ -326,6 +326,11 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
         "tar_path": tar_rel,
         "fetched_at": iso_utc_now(),
     }
+
+
+def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+    base_out = base_row_result(row, tar_rel)
+    prefix = base_out["source_id"]
     if row.get("status") != "planned_xml":
         return {**base_out, "status": row.get("status") or "skipped"}
     try:
@@ -452,6 +457,18 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     }
 
 
+def process_row_safe(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+    try:
+        return process_row(row, tar_rel, proxy_pool, idx, args)
+    except Exception as e:  # noqa: BLE001
+        return {
+            **base_row_result(row, tar_rel),
+            "status": "row_error",
+            "error_type": type(e).__name__,
+            "error": str(e)[:300],
+        }
+
+
 def write_result_files(tar: tarfile.TarFile, out: dict) -> None:
     for member, data in out.pop("_files", []):
         tar_add_bytes(tar, member, data)
@@ -521,6 +538,29 @@ def log_row_result(shard_id: str, sub_id: str, idx: int, total_rows: int, out: d
         log(f"shard {shard_id} sub {sub_id} row {idx + 1}/{total_rows} {out.get('source_id')}: {out['status']}")
 
 
+def maybe_write_row_heartbeat(
+    corpus: Path,
+    shard_id: str,
+    sub_id: str,
+    total_rows: int,
+    rows_done: int,
+    counts: collections.Counter,
+    args: argparse.Namespace,
+) -> None:
+    if not args.heartbeat_every:
+        return
+    if rows_done < total_rows and rows_done % args.heartbeat_every != 0:
+        return
+    write_shard_heartbeat(corpus, shard_id, {
+        "status": "running",
+        "current_subtar": sub_id,
+        "current_subtar_rows_done": rows_done,
+        "current_subtar_rows_total": total_rows,
+        "current_subtar_status_counts": dict(counts),
+        "request_stats": fetch_stats(),
+    })
+
+
 def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_pool: ProxyPool, args: argparse.Namespace) -> collections.Counter:
     rows = list(read_jsonl(plan))
     tar_path = corpus / "data" / f"shard-{shard_id}" / f"sub-{sub_id}.tar"
@@ -550,11 +590,12 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
 
     if args.workers <= 1:
         for idx in missing_indices:
-            out = process_row(rows[idx], tar_rel, proxy_pool, idx, args)
+            out = process_row_safe(rows[idx], tar_rel, proxy_pool, idx, args)
             cached = write_row_cache(work_dir, idx, out)
             out_rows[idx] = cached
             counts[cached["status"]] += 1
             log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
+            maybe_write_row_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts, args)
     else:
         pending: dict[concurrent.futures.Future[dict], int] = {}
         missing_pos = 0
@@ -564,7 +605,7 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
             nonlocal missing_pos
             while missing_pos < len(missing_indices) and len(pending) < max_pending:
                 idx = missing_indices[missing_pos]
-                fut = executor.submit(process_row, rows[idx], tar_rel, proxy_pool, idx, args)
+                fut = executor.submit(process_row_safe, rows[idx], tar_rel, proxy_pool, idx, args)
                 pending[fut] = idx
                 missing_pos += 1
 
@@ -582,6 +623,7 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                     out_rows[idx] = cached
                     counts[cached["status"]] += 1
                     log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
+                    maybe_write_row_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts, args)
                 fill_pending(executor)
 
     assemble_subtar(tar_path, manifest_path, work_dir, out_rows)
@@ -592,6 +634,7 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
         "tar": str(tar_path),
         "manifest": str(manifest_path),
         "status_counts": dict(counts),
+        "request_stats": fetch_stats(),
     }) + "\n")
     shutil.rmtree(work_dir, ignore_errors=True)
     return counts
@@ -635,6 +678,7 @@ def main() -> int:
     p.add_argument("--skip-figures", action="store_true")
     p.add_argument("--allow-third-party-caption-figures", action="store_true")
     p.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "100")))
+    p.add_argument("--heartbeat-every", type=int, default=int(os.environ.get("HEARTBEAT_EVERY", "100")))
     p.add_argument("--force", action="store_true")
     p.add_argument("--user-agent", default=None)
     p.add_argument("--contact-email", default=None)
@@ -659,7 +703,12 @@ def main() -> int:
         plans = plans[: args.max_subtars]
     total = collections.Counter()
     full_shard_run = args.subtar_id is None and not args.max_subtars
-    write_shard_heartbeat(corpus, shard_id, {"status": "running", "plans_total": len(plans), "plans_done": 0})
+    write_shard_heartbeat(corpus, shard_id, {
+        "status": "running",
+        "plans_total": len(plans),
+        "plans_done": 0,
+        "request_stats": fetch_stats(),
+    })
     for plan in plans:
         sub_id = plan.name.removeprefix("sub-").removesuffix(".plan.jsonl")
         try:
@@ -678,6 +727,7 @@ def main() -> int:
                 "failed_subtar": sub_id,
                 "plans_total": len(plans),
                 "plans_done": sum(total.values()),
+                "request_stats": fetch_stats(),
             })
             raise
         total.update(counts)
@@ -687,6 +737,7 @@ def main() -> int:
             "plans_total": len(plans),
             "plans_done": len([p for p in plans if (corpus / "state" / f"shard-{shard_id}" / f"sub-{p.name.removeprefix('sub-').removesuffix('.plan.jsonl')}.done").exists()]),
             "status_counts": dict(total),
+            "request_stats": fetch_stats(),
         })
         log(f"shard {shard_id} sub {sub_id}: {dict(counts)}")
     if full_shard_run:
