@@ -125,6 +125,26 @@ For final clean-corpus accounting, use `ok` and `no_figures` as complete
 accepted rows. Treat `partial_figures` and `figures_failed` as retry queues, not
 accepted deliverables.
 
+For high-throughput runs, prefer row-level requeues over sleeping request
+retries:
+
+```bash
+REQUEST_RETRIES=0
+FIGURE_RETRIES=0
+ROW_RETRIES=2
+RETRY_CACHED_ROWS=1
+```
+
+`ROW_RETRIES` immediately requeues retryable row outcomes inside the subtar
+work queue, so other rows keep filling the shared proxy quota. Retryable row
+outcomes include transient XML HTTP statuses (`403`, `408`, `429`, and `5xx`),
+XML fetch/parse/html-response failures, and incomplete figure rows
+(`partial_figures`, `figures_failed`). After the configured row attempts are
+exhausted, the manifest records `retry_blocked_<final_status>` with
+`retry_history`. `RETRY_CACHED_ROWS=1` makes resumed subtars drop old unblocked
+retryable row caches so they can enter the same queue; blocked rows remain
+stable until explicitly forced.
+
 ## Repository Checks
 
 ```bash

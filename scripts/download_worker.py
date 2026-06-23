@@ -50,6 +50,16 @@ from common import (
 
 ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
 
+RETRYABLE_NON_HTTP_STATUSES = {
+    "xml_fetch_error",
+    "xml_html_response",
+    "xml_parse_error",
+    "row_error",
+    "partial_figures",
+    "figures_failed",
+}
+RETRYABLE_HTTP_CODES = {403, 408, 429, 500, 502, 503, 504}
+
 
 def disk_free_gb(path: Path) -> int:
     path.mkdir(parents=True, exist_ok=True)
@@ -470,6 +480,59 @@ def process_row_safe(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, a
         }
 
 
+def retryable_row_status(status: str | None) -> bool:
+    if not status or status.startswith("retry_blocked_"):
+        return False
+    if status in RETRYABLE_NON_HTTP_STATUSES:
+        return True
+    if not status.startswith("xml_http_"):
+        return False
+    try:
+        code = int(status.removeprefix("xml_http_"))
+    except ValueError:
+        return False
+    return code in RETRYABLE_HTTP_CODES or 500 <= code <= 599
+
+
+def retry_history_entry(out: dict, attempt: int) -> dict:
+    entry = {
+        "attempt": attempt,
+        "status": out.get("status"),
+        "at": iso_utc_now(),
+    }
+    for key in ("error", "error_type", "xml_url", "missing_figure_urls"):
+        if out.get(key):
+            entry[key] = out[key]
+    return entry
+
+
+def mark_retry_blocked(out: dict, total_attempts: int, retries_used: int, history: list[dict]) -> dict:
+    final_status = out.get("status") or "unknown"
+    blocked = dict(out)
+    blocked.pop("_files", None)
+    blocked.update({
+        "status": f"retry_blocked_{final_status}",
+        "retry_blocked": True,
+        "retry_final_status": final_status,
+        "row_attempts": total_attempts,
+        "row_retries": retries_used,
+        "retry_history": history,
+    })
+    return blocked
+
+
+def annotate_retry_success(out: dict, total_attempts: int, retries_used: int, history: list[dict]) -> dict:
+    if not history:
+        return out
+    out = dict(out)
+    out.update({
+        "row_attempts": total_attempts,
+        "row_retries": retries_used,
+        "retry_history": history,
+    })
+    return out
+
+
 def write_result_files(tar: tarfile.TarFile, out: dict) -> None:
     for member, data in out.pop("_files", []):
         tar_add_bytes(tar, member, data)
@@ -478,6 +541,49 @@ def write_result_files(tar: tarfile.TarFile, out: dict) -> None:
 def row_cache_paths(work_dir: Path, idx: int) -> tuple[Path, Path]:
     stem = f"row-{idx:06d}"
     return work_dir / f"{stem}.json", work_dir / f"{stem}.tar"
+
+
+def row_retry_state_path(work_dir: Path, idx: int) -> Path:
+    return work_dir / f"row-{idx:06d}.retry.json"
+
+
+def write_row_retry_state(work_dir: Path, idx: int, retries_used: int, history: list[dict]) -> None:
+    work_dir.mkdir(parents=True, exist_ok=True)
+    atomic_write_text(
+        row_retry_state_path(work_dir, idx),
+        compact_json({
+            "updated_at": iso_utc_now(),
+            "row_index": idx,
+            "retries_used": retries_used,
+            "history": history,
+        }) + "\n",
+    )
+
+
+def read_row_retry_state(work_dir: Path, idx: int) -> dict | None:
+    path = row_retry_state_path(work_dir, idx)
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def delete_row_retry_state(work_dir: Path, idx: int) -> None:
+    try:
+        row_retry_state_path(work_dir, idx).unlink()
+    except FileNotFoundError:
+        pass
+
+
+def delete_row_cache(work_dir: Path, idx: int) -> None:
+    manifest_path, payload_path = row_cache_paths(work_dir, idx)
+    for path in (manifest_path, payload_path):
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def write_row_cache(work_dir: Path, idx: int, out: dict) -> dict:
@@ -492,11 +598,16 @@ def write_row_cache(work_dir: Path, idx: int, out: dict) -> dict:
             for member, data in files:
                 tar_add_bytes(payload_tar, member, data)
         payload_tmp.replace(payload_path)
+    else:
+        try:
+            payload_path.unlink()
+        except FileNotFoundError:
+            pass
     atomic_write_text(manifest_path, compact_json(cache_out) + "\n")
     return cache_out
 
 
-def read_row_cache(work_dir: Path, idx: int) -> dict | None:
+def read_row_cache(work_dir: Path, idx: int, args: argparse.Namespace | None = None) -> dict | None:
     manifest_path, payload_path = row_cache_paths(work_dir, idx)
     if not manifest_path.exists():
         return None
@@ -505,6 +616,19 @@ def read_row_cache(work_dir: Path, idx: int) -> dict | None:
     except Exception:
         return None
     if out.get("_payload_tar") and not payload_path.exists():
+        return None
+    if (
+        args is not None
+        and getattr(args, "retry_cached_rows", False)
+        and getattr(args, "row_retries", 0) > 0
+        and retryable_row_status(out.get("status"))
+    ):
+        history = list(out.get("retry_history") or [])
+        if not history:
+            history.append(retry_history_entry(out, 1))
+        retries_used = min(len(history), getattr(args, "row_retries", 0))
+        write_row_retry_state(work_dir, idx, retries_used, history)
+        delete_row_cache(work_dir, idx)
         return None
     return out
 
@@ -547,19 +671,24 @@ def maybe_write_row_heartbeat(
     rows_done: int,
     counts: collections.Counter,
     args: argparse.Namespace,
+    retry_counts: collections.Counter | None = None,
 ) -> None:
     if not args.heartbeat_every:
         return
     if rows_done < total_rows and rows_done % args.heartbeat_every != 0:
         return
-    write_shard_heartbeat(corpus, shard_id, {
+    payload = {
         "status": "running",
         "current_subtar": sub_id,
         "current_subtar_rows_done": rows_done,
         "current_subtar_rows_total": total_rows,
         "current_subtar_status_counts": dict(counts),
         "request_stats": fetch_stats(),
-    })
+    }
+    if retry_counts:
+        payload["current_subtar_retry_counts"] = dict(retry_counts)
+        payload["current_subtar_retry_events"] = sum(retry_counts.values())
+    write_shard_heartbeat(corpus, shard_id, payload)
 
 
 def write_running_subtar_heartbeat(
@@ -569,15 +698,20 @@ def write_running_subtar_heartbeat(
     total_rows: int,
     rows_done: int,
     counts: collections.Counter,
+    retry_counts: collections.Counter | None = None,
 ) -> None:
-    write_shard_heartbeat(corpus, shard_id, {
+    payload = {
         "status": "running",
         "current_subtar": sub_id,
         "current_subtar_rows_done": rows_done,
         "current_subtar_rows_total": total_rows,
         "current_subtar_status_counts": dict(counts),
         "request_stats": fetch_stats(),
-    })
+    }
+    if retry_counts:
+        payload["current_subtar_retry_counts"] = dict(retry_counts)
+        payload["current_subtar_retry_events"] = sum(retry_counts.values())
+    write_shard_heartbeat(corpus, shard_id, payload)
 
 
 def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_pool: ProxyPool, args: argparse.Namespace) -> collections.Counter:
@@ -598,60 +732,136 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
 
     missing_indices = []
     for idx in range(len(rows)):
-        cached = read_row_cache(work_dir, idx)
+        cached = read_row_cache(work_dir, idx, args)
         if cached is None:
             missing_indices.append(idx)
             continue
         out_rows[idx] = cached
         counts[cached["status"]] += 1
+        delete_row_retry_state(work_dir, idx)
     if missing_indices and len(missing_indices) != len(rows):
         log(f"resume shard {shard_id} sub {sub_id}: cached {len(rows) - len(missing_indices)}/{len(rows)} rows")
 
+    row_retries = max(0, getattr(args, "row_retries", 0))
+    attempts: collections.Counter[int] = collections.Counter()
+    retry_histories: dict[int, list[dict]] = collections.defaultdict(list)
+    retry_counts: collections.Counter = collections.Counter()
+    for idx in missing_indices:
+        state = read_row_retry_state(work_dir, idx)
+        if not state:
+            continue
+        history = state.get("history") or []
+        if not isinstance(history, list):
+            history = []
+        retry_histories[idx] = history
+        try:
+            retries_used = int(state.get("retries_used") or 0)
+        except (TypeError, ValueError):
+            retries_used = 0
+        attempts[idx] = min(max(0, retries_used), row_retries)
+
+    def finish_attempt(idx: int, out: dict, retry_queue: collections.deque[int]) -> bool:
+        status = out.get("status")
+        if row_retries > 0 and retryable_row_status(status):
+            total_attempts = attempts[idx] + 1
+            retry_histories[idx].append(retry_history_entry(out, total_attempts))
+            if attempts[idx] < row_retries:
+                attempts[idx] += 1
+                write_row_retry_state(work_dir, idx, attempts[idx], retry_histories[idx])
+                retry_counts[f"requeue_{status or 'unknown'}"] += 1
+                retry_queue.append(idx)
+                log(
+                    f"shard {shard_id} sub {sub_id} row {idx + 1}/{len(rows)} "
+                    f"{out.get('source_id')}: requeue {status} attempt {total_attempts}/{row_retries + 1}"
+                )
+                maybe_write_row_heartbeat(
+                    corpus,
+                    shard_id,
+                    sub_id,
+                    len(rows),
+                    sum(counts.values()),
+                    counts,
+                    args,
+                    retry_counts,
+                )
+                return False
+            out = mark_retry_blocked(out, total_attempts, attempts[idx], retry_histories[idx])
+        elif attempts[idx] > 0:
+            out = annotate_retry_success(out, attempts[idx] + 1, attempts[idx], retry_histories[idx])
+
+        cached = write_row_cache(work_dir, idx, out)
+        delete_row_retry_state(work_dir, idx)
+        out_rows[idx] = cached
+        counts[cached["status"]] += 1
+        log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
+        maybe_write_row_heartbeat(
+            corpus,
+            shard_id,
+            sub_id,
+            len(rows),
+            sum(counts.values()),
+            counts,
+            args,
+            retry_counts,
+        )
+        return True
+
     if args.workers <= 1:
-        for idx in missing_indices:
+        retry_queue = collections.deque(missing_indices)
+        while retry_queue:
+            idx = retry_queue.popleft()
             out = process_row_safe(rows[idx], tar_rel, proxy_pool, idx, args)
-            cached = write_row_cache(work_dir, idx, out)
-            out_rows[idx] = cached
-            counts[cached["status"]] += 1
-            log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
-            maybe_write_row_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts, args)
+            finish_attempt(idx, out, retry_queue)
     else:
         pending: dict[concurrent.futures.Future[dict], int] = {}
-        missing_pos = 0
+        retry_queue = collections.deque(missing_indices)
         max_pending = max(args.workers, args.workers * 2)
 
         def fill_pending(executor: concurrent.futures.Executor) -> None:
-            nonlocal missing_pos
-            while missing_pos < len(missing_indices) and len(pending) < max_pending:
-                idx = missing_indices[missing_pos]
+            while retry_queue and len(pending) < max_pending:
+                idx = retry_queue.popleft()
                 fut = executor.submit(process_row_safe, rows[idx], tar_rel, proxy_pool, idx, args)
                 pending[fut] = idx
-                missing_pos += 1
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
             fill_pending(executor)
             last_time_heartbeat = time.monotonic()
-            while pending:
+            while pending or retry_queue:
+                if not pending:
+                    fill_pending(executor)
+                    continue
                 done, _ = concurrent.futures.wait(
                     pending,
                     timeout=args.heartbeat_seconds if args.heartbeat_seconds else None,
                     return_when=concurrent.futures.FIRST_COMPLETED,
                 )
                 if not done:
-                    write_running_subtar_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts)
+                    write_running_subtar_heartbeat(
+                        corpus,
+                        shard_id,
+                        sub_id,
+                        len(rows),
+                        sum(counts.values()),
+                        counts,
+                        retry_counts,
+                    )
                     last_time_heartbeat = time.monotonic()
                     continue
                 for fut in done:
                     idx = pending.pop(fut)
                     out = fut.result()
-                    cached = write_row_cache(work_dir, idx, out)
-                    out_rows[idx] = cached
-                    counts[cached["status"]] += 1
-                    log_row_result(shard_id, sub_id, idx, len(rows), cached, args)
-                    maybe_write_row_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts, args)
+                    finish_attempt(idx, out, retry_queue)
                 fill_pending(executor)
                 if args.heartbeat_seconds and time.monotonic() - last_time_heartbeat >= args.heartbeat_seconds:
-                    write_running_subtar_heartbeat(corpus, shard_id, sub_id, len(rows), sum(counts.values()), counts)
+                    write_running_subtar_heartbeat(
+                        corpus,
+                        shard_id,
+                        sub_id,
+                        len(rows),
+                        sum(counts.values()),
+                        counts,
+                        retry_counts,
+                    )
                     last_time_heartbeat = time.monotonic()
 
     assemble_subtar(tar_path, manifest_path, work_dir, out_rows)
@@ -679,6 +889,13 @@ def write_shard_heartbeat(corpus: Path, shard_id: str, payload: dict) -> None:
     atomic_write_text(path, compact_json(data) + "\n")
 
 
+def env_bool(name: str) -> bool | None:
+    raw = os.environ.get(name)
+    if raw is None:
+        return None
+    return raw.strip().lower() not in {"0", "false", "no", "off", ""}
+
+
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--corpus-root", default="/mloscratch/scielo-fulltext")
@@ -689,6 +906,13 @@ def main() -> int:
     p.add_argument("--figure-timeout", type=int, default=int(os.environ.get("FIGURE_TIMEOUT", os.environ.get("REQUEST_TIMEOUT", "90"))))
     p.add_argument("--retries", type=int, default=int(os.environ.get("REQUEST_RETRIES", "3")))
     p.add_argument("--figure-retries", type=int, default=int(os.environ.get("FIGURE_RETRIES", "3")))
+    p.add_argument("--row-retries", type=int, default=int(os.environ.get("ROW_RETRIES", "0")))
+    p.add_argument(
+        "--retry-cached-rows",
+        action=argparse.BooleanOptionalAction,
+        default=env_bool("RETRY_CACHED_ROWS"),
+        help="When row retries are enabled, drop unblocked retryable row caches on resume so they are retried.",
+    )
     p.add_argument("--rpm-per-proxy", type=int, default=int(os.environ.get("RPM_PER_PROXY", "10")))
     p.add_argument("--workers", type=int, default=int(os.environ.get("DOWNLOAD_WORKERS", "1")))
     p.add_argument("--resolve-final-url", action=argparse.BooleanOptionalAction, default=os.environ.get("RESOLVE_FINAL_URL", "0") == "1")
@@ -713,6 +937,8 @@ def main() -> int:
     p.add_argument("--user-agent", default=None)
     p.add_argument("--contact-email", default=None)
     args = p.parse_args()
+    if args.retry_cached_rows is None:
+        args.retry_cached_rows = args.row_retries > 0
 
     proxies = require_proxies()
     proxy_pool = ProxyPool(proxies, args.rpm_per_proxy)

@@ -28,6 +28,8 @@ REQUEST_TIMEOUT="${REQUEST_TIMEOUT:-}"
 FIGURE_TIMEOUT="${FIGURE_TIMEOUT:-}"
 REQUEST_RETRIES="${REQUEST_RETRIES:-}"
 FIGURE_RETRIES="${FIGURE_RETRIES:-}"
+ROW_RETRIES="${ROW_RETRIES:-}"
+RETRY_CACHED_ROWS="${RETRY_CACHED_ROWS:-}"
 LOG_EVERY="${LOG_EVERY:-}"
 HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-}"
@@ -66,6 +68,8 @@ Important env:
   FIGURE_TIMEOUT        Optional figure-request timeout in seconds
   REQUEST_RETRIES       Optional XML request retries per row
   FIGURE_RETRIES        Optional figure request retries per media URL
+  ROW_RETRIES           Optional non-sleeping row requeues before retry_blocked
+  RETRY_CACHED_ROWS     1/0; retry old unblocked retryable row caches on resume
   LOG_EVERY             Optional row log interval for ok rows
   HEARTBEAT_EVERY       Optional row heartbeat interval
   HEARTBEAT_SECONDS     Optional timer heartbeat interval
@@ -179,6 +183,8 @@ echo "  proxy_partitioning=${PROXY_PARTITIONING}"
 [[ -n "${FIGURE_TIMEOUT}" ]] && echo "  figure_timeout=${FIGURE_TIMEOUT}"
 [[ -n "${REQUEST_RETRIES}" ]] && echo "  request_retries=${REQUEST_RETRIES}"
 [[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
+[[ -n "${ROW_RETRIES}" ]] && echo "  row_retries=${ROW_RETRIES}"
+[[ -n "${RETRY_CACHED_ROWS}" ]] && echo "  retry_cached_rows=${RETRY_CACHED_ROWS}"
 [[ -n "${MAX_FIGURE_BYTES}" ]] && echo "  max_figure_bytes=${MAX_FIGURE_BYTES}"
 [[ -n "${HEARTBEAT_EVERY}" ]] && echo "  heartbeat_every=${HEARTBEAT_EVERY}"
 [[ -n "${HEARTBEAT_SECONDS}" ]] && echo "  heartbeat_seconds=${HEARTBEAT_SECONDS}"
@@ -214,6 +220,8 @@ for sid_int in "${IDS[@]}"; do
   [[ -n "${FIGURE_TIMEOUT}" ]] && append_export FIGURE_TIMEOUT "${FIGURE_TIMEOUT}"
   [[ -n "${REQUEST_RETRIES}" ]] && append_export REQUEST_RETRIES "${REQUEST_RETRIES}"
   [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
+  [[ -n "${ROW_RETRIES}" ]] && append_export ROW_RETRIES "${ROW_RETRIES}"
+  [[ -n "${RETRY_CACHED_ROWS}" ]] && append_export RETRY_CACHED_ROWS "${RETRY_CACHED_ROWS}"
   [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"
   [[ -n "${HEARTBEAT_EVERY}" ]] && append_export HEARTBEAT_EVERY "${HEARTBEAT_EVERY}"
   [[ -n "${HEARTBEAT_SECONDS}" ]] && append_export HEARTBEAT_SECONDS "${HEARTBEAT_SECONDS}"

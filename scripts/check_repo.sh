@@ -29,6 +29,7 @@ PROXY_PARTITION_INDEX=1 \
 PROXY_PARTITION_COUNT=2 \
 python3 - <<'PY'
 import argparse
+import json
 import os
 import sys
 import tempfile
@@ -104,6 +105,73 @@ finally:
 assert out["status"] == "no_figures", out
 assert out["source_id"] == "scielo-smoke-S0000", out
 assert any(member.endswith("/source.json") for member, _ in out["_files"]), out["_files"]
+
+assert download_worker.retryable_row_status("xml_http_502")
+assert download_worker.retryable_row_status("partial_figures")
+assert not download_worker.retryable_row_status("xml_http_404")
+assert not download_worker.retryable_row_status("license_skip")
+
+with tempfile.TemporaryDirectory() as tmp:
+    work_dir = Path(tmp)
+    retry_args = argparse.Namespace(row_retries=2, retry_cached_rows=True)
+    download_worker.write_row_cache(work_dir, 0, {
+        "source": "scielo",
+        "source_id": "scielo-smoke-cached-retry",
+        "status": "xml_http_502",
+        "error": "HTTP 502",
+    })
+    assert download_worker.read_row_cache(work_dir, 0, retry_args) is None
+    retry_state = download_worker.read_row_retry_state(work_dir, 0)
+    assert retry_state["retries_used"] == 1, retry_state
+    assert retry_state["history"][0]["status"] == "xml_http_502", retry_state
+
+with tempfile.TemporaryDirectory() as tmp:
+    corpus = Path(tmp)
+    plan = corpus / "index/shards/shard-00/sub-000.plan.jsonl"
+    plan.parent.mkdir(parents=True)
+    plan.write_text('{"status":"planned_xml","source_id":"scielo-smoke-retry"}\n', encoding="utf-8")
+    calls = {"n": 0}
+
+    def fake_process_row_safe(row, tar_rel, proxy_pool, idx, args):
+        calls["n"] += 1
+        base = {
+            "source": "scielo",
+            "source_id": row["source_id"],
+            "pid": "",
+            "collection": "",
+            "doi": "",
+            "shard": "",
+            "subtar": "",
+            "tar_path": tar_rel,
+            "fetched_at": "2026-01-01T00:00:00+00:00",
+        }
+        if calls["n"] < 3:
+            return {**base, "status": "xml_http_502", "error": "HTTP 502"}
+        return {**base, "status": "no_figures", "_files": []}
+
+    original_process_row_safe = download_worker.process_row_safe
+    try:
+        download_worker.process_row_safe = fake_process_row_safe
+        retry_args = argparse.Namespace(
+            workers=1,
+            row_retries=2,
+            retry_cached_rows=True,
+            force=False,
+            heartbeat_every=0,
+            heartbeat_seconds=0,
+            log_every=0,
+        )
+        retry_counts = download_worker.process_subtar(corpus, plan, "00", "000", None, retry_args)
+    finally:
+        download_worker.process_row_safe = original_process_row_safe
+
+    manifest_row = json.loads((corpus / "manifests/shard-00/sub-000.jsonl").read_text().splitlines()[0])
+    assert calls["n"] == 3, calls
+    assert retry_counts["no_figures"] == 1, retry_counts
+    assert manifest_row["status"] == "no_figures", manifest_row
+    assert manifest_row["row_attempts"] == 3, manifest_row
+    assert manifest_row["row_retries"] == 2, manifest_row
+    assert len(manifest_row["retry_history"]) == 2, manifest_row
 PY
 
 if git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then
