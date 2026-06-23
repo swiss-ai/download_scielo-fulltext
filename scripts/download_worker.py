@@ -406,7 +406,7 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     xml_member = f"{prefix}/article.xml"
     source_member = f"{prefix}/source.json"
     source_payload = {
-        "source_id": sid,
+        "source_id": prefix,
         "pid": row.get("pid", ""),
         "collection": row.get("collection", ""),
         "fulltext_html_url": row.get("fulltext_html_url", ""),
@@ -420,7 +420,7 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     }
     expected = len(urls)
     downloaded = len(figure_files)
-    status = "ok" if expected == downloaded else ("partial_figures" if downloaded else ("no_figures" if expected == 0 else "figures_failed"))
+    status = "no_figures" if expected == 0 else ("ok" if expected == downloaded else ("partial_figures" if downloaded else "figures_failed"))
     return {
         **base_out,
         "status": status,
