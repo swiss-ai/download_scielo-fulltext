@@ -45,8 +45,25 @@ PY
       --corpus-root "${CORPUS_ROOT}" \
       --output "${out}"
     ;;
+  pipeline)
+    echo "waiting for repair, verifying shards, and aggregating"
+    pipeline_args=(
+      --corpus-root "${CORPUS_ROOT}"
+      --repo-dir "${REPO_DIR}"
+      --poll-seconds "${WAIT_SECONDS:-60}"
+      --timeout-seconds "${WAIT_TIMEOUT_SECONDS:-0}"
+      --verify-parallelism "${VERIFY_PARALLELISM:-4}"
+    )
+    if [[ "${WAIT_FOR_REPAIR_DONE:-1}" == "0" ]]; then
+      pipeline_args+=(--no-wait-repair-done)
+    fi
+    if [[ "${FORCE_VERIFY:-0}" == "1" ]]; then
+      pipeline_args+=(--force-verify)
+    fi
+    python3 -u "${REPO_DIR}/scripts/postprocess_pipeline.py" "${pipeline_args[@]}"
+    ;;
   *)
-    echo "ERROR: unsupported POSTPROCESS_MODE=${POSTPROCESS_MODE}; expected verify or aggregate" >&2
+    echo "ERROR: unsupported POSTPROCESS_MODE=${POSTPROCESS_MODE}; expected verify, aggregate, or pipeline" >&2
     exit 1
     ;;
 esac

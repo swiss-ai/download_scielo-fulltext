@@ -22,6 +22,7 @@ usage() {
 Usage:
   $0 verify [options] [shard_id ...]
   $0 aggregate [options]
+  $0 pipeline [options]
 
 Options:
   --dry-run             Print csub.py commands; submit nothing
@@ -42,6 +43,12 @@ Verify jobs write:
 Aggregate writes:
   \${CORPUS_ROOT}/manifest.jsonl
   \${CORPUS_ROOT}/manifest.summary.json
+
+Pipeline waits for all shard repair markers, verifies every shard, and then
+aggregates. Useful env:
+  VERIFY_PARALLELISM     Shards to verify concurrently inside the pod (default 4)
+  WAIT_SECONDS           Repair marker polling interval (default 60)
+  WAIT_TIMEOUT_SECONDS   0 means no timeout
 EOF
 }
 
@@ -53,7 +60,7 @@ fi
 MODE="$1"
 shift
 case "${MODE}" in
-  verify|aggregate) ;;
+  verify|aggregate|pipeline) ;;
   -h|--help) usage; exit 0 ;;
   *) echo "ERROR: first argument must be verify or aggregate" >&2; usage; exit 1 ;;
 esac
@@ -90,12 +97,12 @@ fi
 N_SHARDS="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['n_shards'])")"
 PAD="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['pad_shard'])")"
 
-if [[ "${MODE}" == "aggregate" ]]; then
+if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" ]]; then
   if [[ ${#EXPLICIT_IDS[@]} -ne 0 || "${YES_ALL}" == "1" ]]; then
-    echo "ERROR: aggregate mode does not take shard IDs or --yes-all." >&2
+    echo "ERROR: ${MODE} mode does not take shard IDs or --yes-all." >&2
     exit 1
   fi
-  IDS=(aggregate)
+  IDS=("${MODE}")
 else
   if [[ ${#EXPLICIT_IDS[@]} -eq 0 ]]; then
     if [[ "${YES_ALL}" != "1" ]]; then
@@ -169,14 +176,19 @@ echo "  image=${IMAGE} corpus=${CORPUS_ROOT}"
 echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 [[ -n "${NODE_TYPE}" ]] && echo "  node_type=${NODE_TYPE}"
 
-if [[ "${MODE}" == "aggregate" ]]; then
+if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" ]]; then
   command="export"
-  append_export POSTPROCESS_MODE aggregate
+  append_export POSTPROCESS_MODE "${MODE}"
   append_export CORPUS_ROOT "${CORPUS_ROOT}"
   append_export REPO_DIR "${POD_REPO_DIR}"
   append_export RCP_USER "${RCP_USER}"
+  [[ -n "${VERIFY_PARALLELISM:-}" ]] && append_export VERIFY_PARALLELISM "${VERIFY_PARALLELISM}"
+  [[ -n "${WAIT_SECONDS:-}" ]] && append_export WAIT_SECONDS "${WAIT_SECONDS}"
+  [[ -n "${WAIT_TIMEOUT_SECONDS:-}" ]] && append_export WAIT_TIMEOUT_SECONDS "${WAIT_TIMEOUT_SECONDS}"
+  [[ -n "${WAIT_FOR_REPAIR_DONE:-}" ]] && append_export WAIT_FOR_REPAIR_DONE "${WAIT_FOR_REPAIR_DONE}"
+  [[ -n "${FORCE_VERIFY:-}" ]] && append_export FORCE_VERIFY "${FORCE_VERIFY}"
   command="${command}; exec bash '${POD_REPO_DIR}/scripts/postprocess_worker.sh'"
-  submit_one "${JOB_PREFIX}-aggregate" "${command}"
+  submit_one "${JOB_PREFIX}-${MODE}" "${command}"
 else
   echo "  shards=${IDS[*]}"
   for sid_int in "${IDS[@]}"; do
