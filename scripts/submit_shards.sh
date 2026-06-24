@@ -30,6 +30,8 @@ REQUEST_RETRIES="${REQUEST_RETRIES:-}"
 FIGURE_RETRIES="${FIGURE_RETRIES:-}"
 ROW_RETRIES="${ROW_RETRIES:-}"
 RETRY_CACHED_ROWS="${RETRY_CACHED_ROWS:-}"
+REPAIR_RETRIES="${REPAIR_RETRIES:-}"
+REPAIR_LABEL="${REPAIR_LABEL:-}"
 LOG_EVERY="${LOG_EVERY:-}"
 HEARTBEAT_EVERY="${HEARTBEAT_EVERY:-}"
 HEARTBEAT_SECONDS="${HEARTBEAT_SECONDS:-}"
@@ -70,6 +72,8 @@ Important env:
   FIGURE_RETRIES        Optional figure request retries per media URL
   ROW_RETRIES           Optional non-sleeping row requeues before retry_blocked
   RETRY_CACHED_ROWS     1/0; retry old unblocked retryable row caches on resume
+  REPAIR_RETRIES        1 to repair retryable terminal rows in finalized subtars
+  REPAIR_LABEL          Optional label recorded in repaired retry_history entries
   LOG_EVERY             Optional row log interval for ok rows
   HEARTBEAT_EVERY       Optional row heartbeat interval
   HEARTBEAT_SECONDS     Optional timer heartbeat interval
@@ -185,6 +189,8 @@ echo "  proxy_partitioning=${PROXY_PARTITIONING}"
 [[ -n "${FIGURE_RETRIES}" ]] && echo "  figure_retries=${FIGURE_RETRIES}"
 [[ -n "${ROW_RETRIES}" ]] && echo "  row_retries=${ROW_RETRIES}"
 [[ -n "${RETRY_CACHED_ROWS}" ]] && echo "  retry_cached_rows=${RETRY_CACHED_ROWS}"
+[[ -n "${REPAIR_RETRIES}" ]] && echo "  repair_retries=${REPAIR_RETRIES}"
+[[ -n "${REPAIR_LABEL}" ]] && echo "  repair_label=${REPAIR_LABEL}"
 [[ -n "${MAX_FIGURE_BYTES}" ]] && echo "  max_figure_bytes=${MAX_FIGURE_BYTES}"
 [[ -n "${HEARTBEAT_EVERY}" ]] && echo "  heartbeat_every=${HEARTBEAT_EVERY}"
 [[ -n "${HEARTBEAT_SECONDS}" ]] && echo "  heartbeat_seconds=${HEARTBEAT_SECONDS}"
@@ -222,6 +228,8 @@ for sid_int in "${IDS[@]}"; do
   [[ -n "${FIGURE_RETRIES}" ]] && append_export FIGURE_RETRIES "${FIGURE_RETRIES}"
   [[ -n "${ROW_RETRIES}" ]] && append_export ROW_RETRIES "${ROW_RETRIES}"
   [[ -n "${RETRY_CACHED_ROWS}" ]] && append_export RETRY_CACHED_ROWS "${RETRY_CACHED_ROWS}"
+  [[ -n "${REPAIR_RETRIES}" ]] && append_export REPAIR_RETRIES "${REPAIR_RETRIES}"
+  [[ -n "${REPAIR_LABEL}" ]] && append_export REPAIR_LABEL "${REPAIR_LABEL}"
   [[ -n "${LOG_EVERY}" ]] && append_export LOG_EVERY "${LOG_EVERY}"
   [[ -n "${HEARTBEAT_EVERY}" ]] && append_export HEARTBEAT_EVERY "${HEARTBEAT_EVERY}"
   [[ -n "${HEARTBEAT_SECONDS}" ]] && append_export HEARTBEAT_SECONDS "${HEARTBEAT_SECONDS}"

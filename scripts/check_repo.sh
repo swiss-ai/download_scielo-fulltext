@@ -29,6 +29,7 @@ PROXY_PARTITION_INDEX=1 \
 PROXY_PARTITION_COUNT=2 \
 python3 - <<'PY'
 import argparse
+import tarfile
 import json
 import os
 import sys
@@ -36,6 +37,7 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "scripts"))
 import download_worker
+import repair_retries
 from common import ProxyPool
 from common import require_proxies
 from common import xml_url_from_final
@@ -172,6 +174,91 @@ with tempfile.TemporaryDirectory() as tmp:
     assert manifest_row["row_attempts"] == 3, manifest_row
     assert manifest_row["row_retries"] == 2, manifest_row
     assert len(manifest_row["retry_history"]) == 2, manifest_row
+
+with tempfile.TemporaryDirectory() as tmp:
+    corpus = Path(tmp)
+    plan = corpus / "index/shards/shard-00/sub-000.plan.jsonl"
+    manifest = corpus / "manifests/shard-00/sub-000.jsonl"
+    tar_path = corpus / "data/shard-00/sub-000.tar"
+    for path in (plan.parent, manifest.parent, tar_path.parent):
+        path.mkdir(parents=True)
+    plan.write_text(
+        '{"status":"planned_xml","source_id":"scielo-smoke-keep"}\n'
+        '{"status":"planned_xml","source_id":"scielo-smoke-repair"}\n',
+        encoding="utf-8",
+    )
+    kept_source = "scielo-smoke-keep/source.json"
+    kept_xml = "scielo-smoke-keep/article.xml"
+    repaired_source = "scielo-smoke-repair/source.json"
+    repaired_xml = "scielo-smoke-repair/article.xml"
+    download_worker.write_jsonl(manifest, [
+        {
+            "status": "ok",
+            "source_id": "scielo-smoke-keep",
+            "tar_path": "data/shard-00/sub-000.tar",
+            "source_member": kept_source,
+            "xml_member": kept_xml,
+            "figures": [],
+        },
+        {
+            "status": "retry_blocked_xml_http_502",
+            "source_id": "scielo-smoke-repair",
+            "tar_path": "data/shard-00/sub-000.tar",
+            "retry_history": [{"attempt": 1, "status": "xml_http_502"}],
+        },
+    ])
+    with tarfile.open(tar_path, "w") as tar:
+        download_worker.tar_add_bytes(tar, kept_source, b"{}")
+        download_worker.tar_add_bytes(tar, kept_xml, b"<article/>")
+
+    repair_calls = {"n": 0}
+
+    def fake_repair_process_row_safe(row, tar_rel, proxy_pool, idx, args):
+        repair_calls["n"] += 1
+        if repair_calls["n"] == 1:
+            return {
+                "status": "xml_http_502",
+                "source": "scielo",
+                "source_id": row["source_id"],
+                "tar_path": tar_rel,
+                "error": "HTTP 502",
+            }
+        return {
+            "status": "no_figures",
+            "source": "scielo",
+            "source_id": row["source_id"],
+            "tar_path": tar_rel,
+            "source_member": repaired_source,
+            "xml_member": repaired_xml,
+            "figures": [],
+            "_files": [(repaired_source, b"{}"), (repaired_xml, b"<article/>")],
+        }
+
+    original_process_row_safe = download_worker.process_row_safe
+    try:
+        download_worker.process_row_safe = fake_repair_process_row_safe
+        repair_args = argparse.Namespace(
+            workers=1,
+            row_retries=1,
+            max_repair_rows=0,
+            repair_label="smoke-repair",
+            heartbeat_seconds=0,
+            log_every=0,
+        )
+        repair_counts = repair_retries.repair_subtar(corpus, plan, "00", "000", None, repair_args)
+    finally:
+        download_worker.process_row_safe = original_process_row_safe
+
+    repaired_rows = [json.loads(line) for line in manifest.read_text(encoding="utf-8").splitlines()]
+    assert repair_counts["ok"] == 1, repair_counts
+    assert repair_counts["no_figures"] == 1, repair_counts
+    assert repair_calls["n"] == 2, repair_calls
+    assert repaired_rows[0]["status"] == "ok", repaired_rows
+    assert repaired_rows[1]["status"] == "no_figures", repaired_rows
+    assert repaired_rows[1]["retry_history"][-1]["repair_pass"] == "smoke-repair", repaired_rows[1]
+    with tarfile.open(tar_path, "r") as tar:
+        members = set(tar.getnames())
+    assert {kept_source, kept_xml, repaired_source, repaired_xml}.issubset(members), members
 PY
 
 if git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

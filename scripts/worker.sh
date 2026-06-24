@@ -12,7 +12,11 @@ fi
 CORPUS_ROOT="${CORPUS_ROOT:-/mloscratch/scielo-fulltext}"
 RCP_USER="${RCP_USER:-${USER:-}}"
 REPO_DIR="${REPO_DIR:-/mloscratch/homes/${RCP_USER}/download_scielo-fulltext}"
-WORKER_PY="${REPO_DIR}/scripts/download_worker.py"
+if [[ "${REPAIR_RETRIES:-0}" == "1" ]]; then
+  WORKER_PY="${REPO_DIR}/scripts/repair_retries.py"
+else
+  WORKER_PY="${REPO_DIR}/scripts/download_worker.py"
+fi
 
 if [[ ! -f "${WORKER_PY}" ]]; then
   echo "ERROR: ${WORKER_PY} not found. Stage the repo onto /mloscratch first." >&2
