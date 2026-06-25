@@ -3,7 +3,7 @@
 
 set -euo pipefail
 
-: "${POSTPROCESS_MODE:?POSTPROCESS_MODE env var required: verify or aggregate}"
+: "${POSTPROCESS_MODE:?POSTPROCESS_MODE env var required: verify, aggregate, pipeline, or converter}"
 
 CORPUS_ROOT="${CORPUS_ROOT:-/mloscratch/scielo-fulltext}"
 RCP_USER="${RCP_USER:-${USER:-}}"
@@ -62,8 +62,33 @@ PY
     fi
     python3 -u "${REPO_DIR}/scripts/postprocess_pipeline.py" "${pipeline_args[@]}"
     ;;
+  converter)
+    echo "preparing converter artifacts"
+    if [[ "${INSTALL_PYARROW:-0}" == "1" ]]; then
+      if ! python3 - <<'PY'
+import pyarrow  # noqa: F401
+PY
+      then
+        python3 -m pip install --user "${PYARROW_PACKAGE:-pyarrow>=15,<20}"
+      fi
+    fi
+    converter_args=(
+      --corpus-root "${CORPUS_ROOT}"
+      --output-dir "${CONVERTER_OUTPUT_DIR:-${CORPUS_ROOT}/converter}"
+    )
+    if [[ "${REQUIRE_PARQUET:-1}" == "0" ]]; then
+      converter_args+=(--no-require-parquet)
+    fi
+    if [[ "${WRITE_PARQUET:-1}" == "0" ]]; then
+      converter_args+=(--no-parquet)
+    fi
+    if [[ "${STRICT_MEMBERS:-1}" == "0" ]]; then
+      converter_args+=(--no-strict-members)
+    fi
+    python3 -u "${REPO_DIR}/scripts/prepare_converter.py" "${converter_args[@]}"
+    ;;
   *)
-    echo "ERROR: unsupported POSTPROCESS_MODE=${POSTPROCESS_MODE}; expected verify, aggregate, or pipeline" >&2
+    echo "ERROR: unsupported POSTPROCESS_MODE=${POSTPROCESS_MODE}; expected verify, aggregate, pipeline, or converter" >&2
     exit 1
     ;;
 esac

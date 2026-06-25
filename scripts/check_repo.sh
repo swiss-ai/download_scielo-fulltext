@@ -37,6 +37,7 @@ import tempfile
 from pathlib import Path
 sys.path.insert(0, os.path.join(os.environ["ROOT"], "scripts"))
 import download_worker
+import prepare_converter
 import repair_retries
 from common import ProxyPool
 from common import require_proxies
@@ -259,6 +260,82 @@ with tempfile.TemporaryDirectory() as tmp:
     with tarfile.open(tar_path, "r") as tar:
         members = set(tar.getnames())
     assert {kept_source, kept_xml, repaired_source, repaired_xml}.issubset(members), members
+
+with tempfile.TemporaryDirectory() as tmp:
+    corpus = Path(tmp)
+    manifest = corpus / "manifest.jsonl"
+    seed = corpus / "index/manifest_seed.jsonl"
+    tar_path = corpus / "data/shard-00/sub-000.tar"
+    seed.parent.mkdir(parents=True)
+    tar_path.parent.mkdir(parents=True)
+    source_id = "scielo-smoke-converter"
+    xml_member = f"{source_id}/article.xml"
+    source_member = f"{source_id}/source.json"
+    fig_member = f"{source_id}/figures/000-abc-fig.jpg"
+    with tarfile.open(tar_path, "w") as tar:
+        download_worker.tar_add_bytes(tar, xml_member, b"<article/>")
+        download_worker.tar_add_bytes(tar, source_member, b"{}")
+        download_worker.tar_add_bytes(tar, fig_member, b"fig")
+    download_worker.write_jsonl(seed, [
+        {
+            "source_id": source_id,
+            "publication_year": "2026",
+            "document_type": "research-article",
+            "preferred_lang": "en",
+        }
+    ])
+    download_worker.write_jsonl(manifest, [
+        {
+            "source": "scielo",
+            "source_id": source_id,
+            "pid": "S0000",
+            "collection": "smoke",
+            "doi": "10.0000/converter",
+            "status": "ok",
+            "license_policy": "keep",
+            "license_code": "CC BY",
+            "tar_path": "data/shard-00/sub-000.tar",
+            "xml_member": xml_member,
+            "source_member": source_member,
+            "xml_bytes": 10,
+            "figure_bytes": 3,
+            "expected_figure_files": 1,
+            "downloaded_figure_files": 1,
+            "figures": [{"status": "ok", "member": fig_member, "url": "https://example.test/fig.jpg", "bytes": 3}],
+        },
+        {
+            "source": "scielo",
+            "source_id": "scielo-smoke-blocked",
+            "status": "retry_blocked_xml_fetch_error",
+        },
+    ])
+    out_dir = corpus / "converter"
+    import subprocess
+    proc = subprocess.run(
+        [
+            sys.executable,
+            os.path.join(os.environ["ROOT"], "scripts", "prepare_converter.py"),
+            "--corpus-root",
+            str(corpus),
+            "--manifest",
+            str(manifest),
+            "--seed-manifest",
+            str(seed),
+            "--output-dir",
+            str(out_dir),
+            "--no-parquet",
+        ],
+        check=True,
+        text=True,
+        stdout=subprocess.PIPE,
+    )
+    summary = json.loads((out_dir / "converter_summary.json").read_text(encoding="utf-8"))
+    assert summary["accepted_rows"] == 1, summary
+    assert summary["retry_blocked_rows"] == 1, summary
+    accepted = json.loads((out_dir / "accepted_manifest.jsonl").read_text(encoding="utf-8").splitlines()[0])
+    assert accepted["publication_year"] == "2026", accepted
+    member_lines = [json.loads(line) for line in (out_dir / "accepted_members.jsonl").read_text(encoding="utf-8").splitlines()]
+    assert sum(m["size_bytes"] for m in member_lines) == len(b"<article/>") + len(b"{}") + len(b"fig"), member_lines
 PY
 
 if git -C "${ROOT}" rev-parse --is-inside-work-tree >/dev/null 2>&1; then

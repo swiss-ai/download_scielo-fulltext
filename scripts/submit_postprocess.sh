@@ -23,6 +23,7 @@ Usage:
   $0 verify [options] [shard_id ...]
   $0 aggregate [options]
   $0 pipeline [options]
+  $0 converter [options]
 
 Options:
   --dry-run             Print csub.py commands; submit nothing
@@ -49,6 +50,12 @@ aggregates. Useful env:
   VERIFY_PARALLELISM     Shards to verify concurrently inside the pod (default 4)
   WAIT_SECONDS           Repair marker polling interval (default 60)
   WAIT_TIMEOUT_SECONDS   0 means no timeout
+
+Converter writes accepted-only JSONL/parquet, tar member inventory, retry-blocked
+provenance, checksums, and summary under \${CORPUS_ROOT}/converter. Useful env:
+  INSTALL_PYARROW        1 to pip-install pyarrow in the pod if absent
+  CONVERTER_OUTPUT_DIR   Override output directory
+  REQUIRE_PARQUET        0 to permit JSONL-only output
 EOF
 }
 
@@ -60,9 +67,9 @@ fi
 MODE="$1"
 shift
 case "${MODE}" in
-  verify|aggregate|pipeline) ;;
+  verify|aggregate|pipeline|converter) ;;
   -h|--help) usage; exit 0 ;;
-  *) echo "ERROR: first argument must be verify or aggregate" >&2; usage; exit 1 ;;
+  *) echo "ERROR: first argument must be verify, aggregate, pipeline, or converter" >&2; usage; exit 1 ;;
 esac
 
 DRY_RUN=0
@@ -97,7 +104,7 @@ fi
 N_SHARDS="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['n_shards'])")"
 PAD="$(python3 -c "import json; print(json.load(open('${LOCAL_META}'))['pad_shard'])")"
 
-if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" ]]; then
+if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" || "${MODE}" == "converter" ]]; then
   if [[ ${#EXPLICIT_IDS[@]} -ne 0 || "${YES_ALL}" == "1" ]]; then
     echo "ERROR: ${MODE} mode does not take shard IDs or --yes-all." >&2
     exit 1
@@ -176,7 +183,7 @@ echo "  image=${IMAGE} corpus=${CORPUS_ROOT}"
 echo "  timeout=${TIMEOUT} cpus=${CPUS_PER_POD} memory=${MEMORY_PER_POD}"
 [[ -n "${NODE_TYPE}" ]] && echo "  node_type=${NODE_TYPE}"
 
-if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" ]]; then
+if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" || "${MODE}" == "converter" ]]; then
   command="export"
   append_export POSTPROCESS_MODE "${MODE}"
   append_export CORPUS_ROOT "${CORPUS_ROOT}"
@@ -187,6 +194,12 @@ if [[ "${MODE}" == "aggregate" || "${MODE}" == "pipeline" ]]; then
   [[ -n "${WAIT_TIMEOUT_SECONDS:-}" ]] && append_export WAIT_TIMEOUT_SECONDS "${WAIT_TIMEOUT_SECONDS}"
   [[ -n "${WAIT_FOR_REPAIR_DONE:-}" ]] && append_export WAIT_FOR_REPAIR_DONE "${WAIT_FOR_REPAIR_DONE}"
   [[ -n "${FORCE_VERIFY:-}" ]] && append_export FORCE_VERIFY "${FORCE_VERIFY}"
+  [[ -n "${INSTALL_PYARROW:-}" ]] && append_export INSTALL_PYARROW "${INSTALL_PYARROW}"
+  [[ -n "${PYARROW_PACKAGE:-}" ]] && append_export PYARROW_PACKAGE "${PYARROW_PACKAGE}"
+  [[ -n "${CONVERTER_OUTPUT_DIR:-}" ]] && append_export CONVERTER_OUTPUT_DIR "${CONVERTER_OUTPUT_DIR}"
+  [[ -n "${REQUIRE_PARQUET:-}" ]] && append_export REQUIRE_PARQUET "${REQUIRE_PARQUET}"
+  [[ -n "${WRITE_PARQUET:-}" ]] && append_export WRITE_PARQUET "${WRITE_PARQUET}"
+  [[ -n "${STRICT_MEMBERS:-}" ]] && append_export STRICT_MEMBERS "${STRICT_MEMBERS}"
   command="${command}; exec bash '${POD_REPO_DIR}/scripts/postprocess_worker.sh'"
   submit_one "${JOB_PREFIX}-${MODE}" "${command}"
 else
