@@ -77,11 +77,11 @@ python3 scripts/verify_shard.py \
   --corpus-root "$ROOT" \
   --shard-id 0
 
-python3 scripts/aggregate_manifest.py \
+uv run python scripts/aggregate_manifest.py \
   --corpus-root "$ROOT"
 
-python3 scripts/estimate_volume.py \
-  --manifest "$ROOT/manifest.jsonl" \
+uv run python scripts/estimate_volume.py \
+  --manifest "$ROOT/manifest.parquet" \
   --total-identifiers 1409144
 ```
 
@@ -96,9 +96,14 @@ python3 scripts/estimate_volume.py \
   data/shard-NN/sub-MMM.tar
   manifests/shard-NN/sub-MMM.jsonl
   manifests/shard-NN.jsonl
-  manifest.jsonl
   manifest.parquet
+  manifest.parquet.summary.json
 ```
+
+The root Parquet aggregate is required and uses the shared versioned
+`docgraph` schema. It joins worker outcomes back to the ArticleMeta seed so
+failed/rejected records retain source metadata. Conversion reads this manifest
+and admits only rows with explicit allowlisted-license evidence.
 
 Tar members:
 

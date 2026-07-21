@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Download one SciELO shard and pack accepted XML + figures into tar files."""
+
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import collections
+import concurrent.futures
 import hashlib
 import io
 import json
@@ -16,11 +17,12 @@ import time
 import xml.etree.ElementTree as ET
 from http.client import HTTPException
 from pathlib import Path
-from urllib.parse import urlparse
 from urllib.error import HTTPError, URLError
+from urllib.parse import urlparse
 
 from common import (
     ProxyPool,
+    article_id,
     atomic_write_text,
     build_user_agent,
     caption_flags,
@@ -29,23 +31,21 @@ from common import (
     fetch_bytes,
     fetch_stats,
     first_text,
+    is_xml_response,
     iso_utc_now,
+    iter_by_local,
     license_info,
     log,
     media_member_name,
     media_urls,
     parse_xml_article,
     read_jsonl,
-    request_headers,
     require_proxies,
     rewrite_media,
     source_id,
     text_of,
-    iter_by_local,
-    article_id,
-    is_xml_response,
-    xml_url_from_final,
     write_jsonl,
+    xml_url_from_final,
 )
 
 ET.register_namespace("xlink", "http://www.w3.org/1999/xlink")
@@ -214,7 +214,9 @@ def fetch_xml_url(
     return data, xml_url, status, headers
 
 
-def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> tuple[bytes, str, int, dict]:
+def fetch_xml(
+    row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace
+) -> tuple[bytes, str, int, dict]:
     preferred_lang = row.get("preferred_lang") or ""
     html_url = row["fulltext_html_url"]
     if args.resolve_final_url:
@@ -228,12 +230,8 @@ def fetch_xml(row: dict, proxy_pool: ProxyPool, idx: int, args: argparse.Namespa
     except Exception as exc:
         direct_error = exc
         should_fallback = (
-            isinstance(exc, ValueError)
-            and str(exc).startswith("xml_html_response")
-        ) or (
-            isinstance(exc, HTTPError)
-            and exc.code in {404}
-        )
+            isinstance(exc, ValueError) and str(exc).startswith("xml_html_response")
+        ) or (isinstance(exc, HTTPError) and exc.code in {404})
         if not args.xml_resolve_fallback or not should_fallback:
             raise
 
@@ -284,7 +282,9 @@ def fetch_figure(
             render_reason = "large_raster_to_jpeg"
         if render_reason:
             try:
-                rendered, rendered_member, tiff_meta = render_raster_derivative(data, member, args, render_reason)
+                rendered, rendered_member, tiff_meta = render_raster_derivative(
+                    data, member, args, render_reason
+                )
                 data = rendered
                 member = rendered_member
                 render_meta.update(tiff_meta)
@@ -302,7 +302,9 @@ def fetch_figure(
                         "rendered": False,
                         "render_failed": True,
                     }
-                render_meta.update({"rendered": False, "render_failed": True, "render_error": str(e)[:300]})
+                render_meta.update(
+                    {"rendered": False, "render_failed": True, "render_error": str(e)[:300]}
+                )
         return {
             "url": url,
             "member": member,
@@ -315,7 +317,13 @@ def fetch_figure(
             "data": data,
         }
     except HTTPError as e:
-        return {"url": url, "member": member, "status": "error", "http_status": e.code, "error": f"HTTP {e.code}"}
+        return {
+            "url": url,
+            "member": member,
+            "status": "error",
+            "http_status": e.code,
+            "error": f"HTTP {e.code}",
+        }
     except (URLError, TimeoutError, OSError, HTTPException, ValueError) as e:
         return {"url": url, "member": member, "status": "error", "error": type(e).__name__}
 
@@ -325,13 +333,23 @@ def article_text_chars(article: ET.Element) -> tuple[int, int]:
 
 
 def base_row_result(row: dict, tar_rel: str) -> dict:
-    sid = row.get("source_id") or source_id(row.get("collection", ""), row.get("pid", ""), row.get("doi", ""))
+    sid = row.get("source_id") or source_id(
+        row.get("collection", ""), row.get("pid", ""), row.get("doi", "")
+    )
     return {
         "source": "scielo",
         "source_id": sid,
         "pid": row.get("pid", ""),
         "collection": row.get("collection", ""),
         "doi": row.get("doi", ""),
+        "document_type": row.get("document_type", ""),
+        "publication_year": row.get("publication_year", ""),
+        "publication_date": row.get("publication_date", ""),
+        "processing_date": row.get("processing_date", ""),
+        "preferred_lang": row.get("preferred_lang", ""),
+        "fulltext_html_url": row.get("fulltext_html_url", ""),
+        "fulltexts": row.get("fulltexts") or {},
+        "articlemeta_row_index": row.get("articlemeta_row_index"),
         "shard": row.get("planned_shard", ""),
         "subtar": row.get("planned_subtar", ""),
         "tar_path": tar_rel,
@@ -339,7 +357,9 @@ def base_row_result(row: dict, tar_rel: str) -> dict:
     }
 
 
-def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+def process_row(
+    row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace
+) -> dict:
     base_out = base_row_result(row, tar_rel)
     prefix = base_out["source_id"]
     if row.get("status") != "planned_xml":
@@ -401,7 +421,9 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     figure_manifest: list[dict] = []
     figure_files: list[tuple[str, bytes]] = []
     if args.skip_figures:
-        figure_manifest = [{"url": url, "member": url_to_member[url], "status": "skipped"} for url in urls]
+        figure_manifest = [
+            {"url": url, "member": url_to_member[url], "status": "skipped"} for url in urls
+        ]
     else:
         for i, url in enumerate(urls):
             res = fetch_figure(url, url_to_member[url], proxy_pool, idx + i + 1, args)
@@ -416,21 +438,41 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     xml_member = f"{prefix}/article.xml"
     source_member = f"{prefix}/source.json"
     source_payload = {
+        "source": "scielo",
         "source_id": prefix,
         "pid": row.get("pid", ""),
         "collection": row.get("collection", ""),
+        "doi": row.get("doi", ""),
+        "document_type": row.get("document_type", ""),
+        "publication_year": row.get("publication_year", ""),
+        "publication_date": row.get("publication_date", ""),
+        "processing_date": row.get("processing_date", ""),
+        "preferred_lang": row.get("preferred_lang", ""),
+        "fulltexts": row.get("fulltexts") or {},
         "fulltext_html_url": row.get("fulltext_html_url", ""),
         "xml_url": xml_url,
         "xml_http_status": xml_status,
         "xml_content_type": xml_headers.get("Content-Type", ""),
         "license_code": lic_code,
         "license_policy": lic_policy,
+        "license_text": lic_text,
         "license_urls": lic_urls,
+        "third_party_caption_flag": third_party_flag,
+        "third_party_caption_terms": third_party_terms,
+        "figures": figure_manifest,
         "downloaded_at": iso_utc_now(),
     }
     expected = len(urls)
     downloaded = len(figure_files)
-    status = "no_figures" if expected == 0 else ("ok" if expected == downloaded else ("partial_figures" if downloaded else "figures_failed"))
+    status = (
+        "no_figures"
+        if expected == 0
+        else (
+            "ok"
+            if expected == downloaded
+            else ("partial_figures" if downloaded else "figures_failed")
+        )
+    )
     return {
         **base_out,
         "status": status,
@@ -450,12 +492,22 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
         "license_urls": lic_urls,
         "figure_count": sum(1 for _ in iter_by_local(article, "fig")),
         "table_count": sum(1 for _ in iter_by_local(article, "table-wrap")),
-        "formula_count": sum(1 for _ in iter_by_local(article, "disp-formula", "inline-formula", "math")),
+        "formula_count": sum(
+            1 for _ in iter_by_local(article, "disp-formula", "inline-formula", "math")
+        ),
         "expected_figure_files": expected,
         "downloaded_figure_files": downloaded,
-        "figure_bytes": sum(int(f.get("bytes", 0) or 0) for f in figure_manifest if f.get("status") == "ok"),
-        "original_figure_bytes": sum(int(f.get("original_bytes", f.get("bytes", 0)) or 0) for f in figure_manifest if f.get("status") == "ok"),
-        "rendered_figure_files": sum(1 for f in figure_manifest if f.get("status") == "ok" and f.get("rendered")),
+        "figure_bytes": sum(
+            int(f.get("bytes", 0) or 0) for f in figure_manifest if f.get("status") == "ok"
+        ),
+        "original_figure_bytes": sum(
+            int(f.get("original_bytes", f.get("bytes", 0)) or 0)
+            for f in figure_manifest
+            if f.get("status") == "ok"
+        ),
+        "rendered_figure_files": sum(
+            1 for f in figure_manifest if f.get("status") == "ok" and f.get("rendered")
+        ),
         "missing_figure_urls": [f["url"] for f in figure_manifest if f.get("status") != "ok"],
         "figures": figure_manifest,
         "third_party_caption_flag": third_party_flag,
@@ -468,7 +520,9 @@ def process_row(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: 
     }
 
 
-def process_row_safe(row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace) -> dict:
+def process_row_safe(
+    row: dict, tar_rel: str, proxy_pool: ProxyPool, idx: int, args: argparse.Namespace
+) -> dict:
     try:
         return process_row(row, tar_rel, proxy_pool, idx, args)
     except Exception as e:  # noqa: BLE001
@@ -506,30 +560,38 @@ def retry_history_entry(out: dict, attempt: int) -> dict:
     return entry
 
 
-def mark_retry_blocked(out: dict, total_attempts: int, retries_used: int, history: list[dict]) -> dict:
+def mark_retry_blocked(
+    out: dict, total_attempts: int, retries_used: int, history: list[dict]
+) -> dict:
     final_status = out.get("status") or "unknown"
     blocked = dict(out)
     blocked.pop("_files", None)
-    blocked.update({
-        "status": f"retry_blocked_{final_status}",
-        "retry_blocked": True,
-        "retry_final_status": final_status,
-        "row_attempts": total_attempts,
-        "row_retries": retries_used,
-        "retry_history": history,
-    })
+    blocked.update(
+        {
+            "status": f"retry_blocked_{final_status}",
+            "retry_blocked": True,
+            "retry_final_status": final_status,
+            "row_attempts": total_attempts,
+            "row_retries": retries_used,
+            "retry_history": history,
+        }
+    )
     return blocked
 
 
-def annotate_retry_success(out: dict, total_attempts: int, retries_used: int, history: list[dict]) -> dict:
+def annotate_retry_success(
+    out: dict, total_attempts: int, retries_used: int, history: list[dict]
+) -> dict:
     if not history:
         return out
     out = dict(out)
-    out.update({
-        "row_attempts": total_attempts,
-        "row_retries": retries_used,
-        "retry_history": history,
-    })
+    out.update(
+        {
+            "row_attempts": total_attempts,
+            "row_retries": retries_used,
+            "retry_history": history,
+        }
+    )
     return out
 
 
@@ -551,12 +613,15 @@ def write_row_retry_state(work_dir: Path, idx: int, retries_used: int, history: 
     work_dir.mkdir(parents=True, exist_ok=True)
     atomic_write_text(
         row_retry_state_path(work_dir, idx),
-        compact_json({
-            "updated_at": iso_utc_now(),
-            "row_index": idx,
-            "retries_used": retries_used,
-            "history": history,
-        }) + "\n",
+        compact_json(
+            {
+                "updated_at": iso_utc_now(),
+                "row_index": idx,
+                "retries_used": retries_used,
+                "history": history,
+            }
+        )
+        + "\n",
     )
 
 
@@ -592,6 +657,9 @@ def write_row_cache(work_dir: Path, idx: int, out: dict) -> dict:
     files = out.pop("_files", [])
     cache_out = dict(out)
     cache_out["_payload_tar"] = bool(files)
+    cache_out["package_members"] = [member for member, _data in files]
+    cache_out["file_count"] = len(files)
+    cache_out["total_bytes"] = sum(len(data) for _member, data in files)
     if files:
         payload_tmp = payload_path.with_suffix(payload_path.suffix + f".tmp.{os.getpid()}")
         with tarfile.open(payload_tmp, "w") as payload_tar:
@@ -644,7 +712,9 @@ def append_payload_tar(final_tar: tarfile.TarFile, payload_path: Path) -> None:
             final_tar.addfile(member, source)
 
 
-def assemble_subtar(tar_path: Path, manifest_path: Path, work_dir: Path, out_rows: list[dict | None]) -> None:
+def assemble_subtar(
+    tar_path: Path, manifest_path: Path, work_dir: Path, out_rows: list[dict | None]
+) -> None:
     missing = [i for i, row in enumerate(out_rows) if row is None]
     if missing:
         raise RuntimeError(f"cannot assemble subtar with missing row caches: {missing[:10]}")
@@ -658,9 +728,14 @@ def assemble_subtar(tar_path: Path, manifest_path: Path, work_dir: Path, out_row
     write_jsonl(manifest_path, [final_manifest_row(row) for row in out_rows if row is not None])
 
 
-def log_row_result(shard_id: str, sub_id: str, idx: int, total_rows: int, out: dict, args: argparse.Namespace) -> None:
+def log_row_result(
+    shard_id: str, sub_id: str, idx: int, total_rows: int, out: dict, args: argparse.Namespace
+) -> None:
     if args.log_every and ((idx + 1) % args.log_every == 0 or out["status"] != "ok"):
-        log(f"shard {shard_id} sub {sub_id} row {idx + 1}/{total_rows} {out.get('source_id')}: {out['status']}")
+        log(
+            f"shard {shard_id} sub {sub_id} row {idx + 1}/{total_rows} "
+            f"{out.get('source_id')}: {out['status']}"
+        )
 
 
 def maybe_write_row_heartbeat(
@@ -714,7 +789,14 @@ def write_running_subtar_heartbeat(
     write_shard_heartbeat(corpus, shard_id, payload)
 
 
-def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_pool: ProxyPool, args: argparse.Namespace) -> collections.Counter:
+def process_subtar(
+    corpus: Path,
+    plan: Path,
+    shard_id: str,
+    sub_id: str,
+    proxy_pool: ProxyPool,
+    args: argparse.Namespace,
+) -> collections.Counter:
     rows = list(read_jsonl(plan))
     tar_path = corpus / "data" / f"shard-{shard_id}" / f"sub-{sub_id}.tar"
     manifest_path = corpus / "manifests" / f"shard-{shard_id}" / f"sub-{sub_id}.jsonl"
@@ -740,7 +822,10 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
         counts[cached["status"]] += 1
         delete_row_retry_state(work_dir, idx)
     if missing_indices and len(missing_indices) != len(rows):
-        log(f"resume shard {shard_id} sub {sub_id}: cached {len(rows) - len(missing_indices)}/{len(rows)} rows")
+        log(
+            f"resume shard {shard_id} sub {sub_id}: cached "
+            f"{len(rows) - len(missing_indices)}/{len(rows)} rows"
+        )
 
     row_retries = max(0, getattr(args, "row_retries", 0))
     attempts: collections.Counter[int] = collections.Counter()
@@ -772,7 +857,8 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                 retry_queue.append(idx)
                 log(
                     f"shard {shard_id} sub {sub_id} row {idx + 1}/{len(rows)} "
-                    f"{out.get('source_id')}: requeue {status} attempt {total_attempts}/{row_retries + 1}"
+                    f"{out.get('source_id')}: requeue {status} attempt "
+                    f"{total_attempts}/{row_retries + 1}"
                 )
                 maybe_write_row_heartbeat(
                     corpus,
@@ -787,7 +873,9 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                 return False
             out = mark_retry_blocked(out, total_attempts, attempts[idx], retry_histories[idx])
         elif attempts[idx] > 0:
-            out = annotate_retry_success(out, attempts[idx] + 1, attempts[idx], retry_histories[idx])
+            out = annotate_retry_success(
+                out, attempts[idx] + 1, attempts[idx], retry_histories[idx]
+            )
 
         cached = write_row_cache(work_dir, idx, out)
         delete_row_retry_state(work_dir, idx)
@@ -852,7 +940,10 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                     out = fut.result()
                     finish_attempt(idx, out, retry_queue)
                 fill_pending(executor)
-                if args.heartbeat_seconds and time.monotonic() - last_time_heartbeat >= args.heartbeat_seconds:
+                if (
+                    args.heartbeat_seconds
+                    and time.monotonic() - last_time_heartbeat >= args.heartbeat_seconds
+                ):
                     write_running_subtar_heartbeat(
                         corpus,
                         shard_id,
@@ -865,15 +956,21 @@ def process_subtar(corpus: Path, plan: Path, shard_id: str, sub_id: str, proxy_p
                     last_time_heartbeat = time.monotonic()
 
     assemble_subtar(tar_path, manifest_path, work_dir, out_rows)
-    atomic_write_text(done_marker, compact_json({
-        "finished_at": iso_utc_now(),
-        "host": socket.gethostname(),
-        "plan": str(plan),
-        "tar": str(tar_path),
-        "manifest": str(manifest_path),
-        "status_counts": dict(counts),
-        "request_stats": fetch_stats(),
-    }) + "\n")
+    atomic_write_text(
+        done_marker,
+        compact_json(
+            {
+                "finished_at": iso_utc_now(),
+                "host": socket.gethostname(),
+                "plan": str(plan),
+                "tar": str(tar_path),
+                "manifest": str(manifest_path),
+                "status_counts": dict(counts),
+                "request_stats": fetch_stats(),
+            }
+        )
+        + "\n",
+    )
     shutil.rmtree(work_dir, ignore_errors=True)
     return counts
 
@@ -903,7 +1000,11 @@ def main() -> int:
     p.add_argument("--subtar-id", type=int)
     p.add_argument("--max-subtars", type=int, default=0)
     p.add_argument("--timeout", type=int, default=int(os.environ.get("REQUEST_TIMEOUT", "90")))
-    p.add_argument("--figure-timeout", type=int, default=int(os.environ.get("FIGURE_TIMEOUT", os.environ.get("REQUEST_TIMEOUT", "90"))))
+    p.add_argument(
+        "--figure-timeout",
+        type=int,
+        default=int(os.environ.get("FIGURE_TIMEOUT", os.environ.get("REQUEST_TIMEOUT", "90"))),
+    )
     p.add_argument("--retries", type=int, default=int(os.environ.get("REQUEST_RETRIES", "3")))
     p.add_argument("--figure-retries", type=int, default=int(os.environ.get("FIGURE_RETRIES", "3")))
     p.add_argument("--row-retries", type=int, default=int(os.environ.get("ROW_RETRIES", "0")))
@@ -911,28 +1012,71 @@ def main() -> int:
         "--retry-cached-rows",
         action=argparse.BooleanOptionalAction,
         default=env_bool("RETRY_CACHED_ROWS"),
-        help="When row retries are enabled, drop unblocked retryable row caches on resume so they are retried.",
+        help=(
+            "When row retries are enabled, drop unblocked retryable row caches "
+            "on resume so they are retried."
+        ),
     )
     p.add_argument("--rpm-per-proxy", type=int, default=int(os.environ.get("RPM_PER_PROXY", "10")))
     p.add_argument("--workers", type=int, default=int(os.environ.get("DOWNLOAD_WORKERS", "1")))
-    p.add_argument("--resolve-final-url", action=argparse.BooleanOptionalAction, default=os.environ.get("RESOLVE_FINAL_URL", "0") == "1")
-    p.add_argument("--xml-resolve-fallback", action=argparse.BooleanOptionalAction, default=os.environ.get("XML_RESOLVE_FALLBACK", "1") != "0")
-    p.add_argument("--max-figure-bytes", type=int, default=int(os.environ.get("MAX_FIGURE_BYTES", str(200 * 1024 * 1024))))
-    p.add_argument("--render-tiff", action=argparse.BooleanOptionalAction, default=os.environ.get("RENDER_TIFF", "1") != "0")
-    p.add_argument("--normalize-large-raster", action=argparse.BooleanOptionalAction, default=os.environ.get("NORMALIZE_LARGE_RASTER", "1") != "0")
-    p.add_argument("--max-passthrough-raster-bytes", type=int, default=int(os.environ.get("MAX_PASSTHROUGH_RASTER_BYTES", str(2 * 1024 * 1024))))
-    p.add_argument("--render-max-side", type=int, default=int(os.environ.get("RENDER_MAX_SIDE", "2048")))
-    p.add_argument("--render-max-pixels", type=int, default=int(os.environ.get("RENDER_MAX_PIXELS", str(2048 * 2048))))
-    p.add_argument("--max-decode-pixels", type=int, default=int(os.environ.get("MAX_DECODE_PIXELS", str(100_000_000))))
-    p.add_argument("--render-jpeg-quality", type=int, default=int(os.environ.get("RENDER_JPEG_QUALITY", "90")))
+    p.add_argument(
+        "--resolve-final-url",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("RESOLVE_FINAL_URL", "0") == "1",
+    )
+    p.add_argument(
+        "--xml-resolve-fallback",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("XML_RESOLVE_FALLBACK", "1") != "0",
+    )
+    p.add_argument(
+        "--max-figure-bytes",
+        type=int,
+        default=int(os.environ.get("MAX_FIGURE_BYTES", str(200 * 1024 * 1024))),
+    )
+    p.add_argument(
+        "--render-tiff",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("RENDER_TIFF", "1") != "0",
+    )
+    p.add_argument(
+        "--normalize-large-raster",
+        action=argparse.BooleanOptionalAction,
+        default=os.environ.get("NORMALIZE_LARGE_RASTER", "1") != "0",
+    )
+    p.add_argument(
+        "--max-passthrough-raster-bytes",
+        type=int,
+        default=int(os.environ.get("MAX_PASSTHROUGH_RASTER_BYTES", str(2 * 1024 * 1024))),
+    )
+    p.add_argument(
+        "--render-max-side", type=int, default=int(os.environ.get("RENDER_MAX_SIDE", "2048"))
+    )
+    p.add_argument(
+        "--render-max-pixels",
+        type=int,
+        default=int(os.environ.get("RENDER_MAX_PIXELS", str(2048 * 2048))),
+    )
+    p.add_argument(
+        "--max-decode-pixels",
+        type=int,
+        default=int(os.environ.get("MAX_DECODE_PIXELS", str(100_000_000))),
+    )
+    p.add_argument(
+        "--render-jpeg-quality", type=int, default=int(os.environ.get("RENDER_JPEG_QUALITY", "90"))
+    )
     p.add_argument("--keep-original-tiff-on-render-failure", action="store_true")
     p.add_argument("--min-body-chars", type=int, default=200)
     p.add_argument("--min-free-gb", type=int, default=int(os.environ.get("MIN_FREE_GB", "5")))
     p.add_argument("--skip-figures", action="store_true")
     p.add_argument("--allow-third-party-caption-figures", action="store_true")
     p.add_argument("--log-every", type=int, default=int(os.environ.get("LOG_EVERY", "100")))
-    p.add_argument("--heartbeat-every", type=int, default=int(os.environ.get("HEARTBEAT_EVERY", "100")))
-    p.add_argument("--heartbeat-seconds", type=int, default=int(os.environ.get("HEARTBEAT_SECONDS", "30")))
+    p.add_argument(
+        "--heartbeat-every", type=int, default=int(os.environ.get("HEARTBEAT_EVERY", "100"))
+    )
+    p.add_argument(
+        "--heartbeat-seconds", type=int, default=int(os.environ.get("HEARTBEAT_SECONDS", "30"))
+    )
     p.add_argument("--force", action="store_true")
     p.add_argument("--user-agent", default=None)
     p.add_argument("--contact-email", default=None)
@@ -959,52 +1103,87 @@ def main() -> int:
         plans = plans[: args.max_subtars]
     total = collections.Counter()
     full_shard_run = args.subtar_id is None and not args.max_subtars
-    write_shard_heartbeat(corpus, shard_id, {
-        "status": "running",
-        "plans_total": len(plans),
-        "plans_done": 0,
-        "request_stats": fetch_stats(),
-    })
+    write_shard_heartbeat(
+        corpus,
+        shard_id,
+        {
+            "status": "running",
+            "plans_total": len(plans),
+            "plans_done": 0,
+            "request_stats": fetch_stats(),
+        },
+    )
     for plan in plans:
         sub_id = plan.name.removeprefix("sub-").removesuffix(".plan.jsonl")
         try:
             counts = process_subtar(corpus, plan, shard_id, sub_id, proxy_pool, args)
         except Exception as exc:
             incomplete = corpus / "state" / f"shard-{shard_id}" / f"sub-{sub_id}.incomplete"
-            atomic_write_text(incomplete, compact_json({
-                "failed_at": iso_utc_now(),
-                "host": socket.gethostname(),
-                "plan": str(plan),
-                "error_type": type(exc).__name__,
-                "error": str(exc)[:1000],
-            }) + "\n")
-            write_shard_heartbeat(corpus, shard_id, {
-                "status": "failed",
-                "failed_subtar": sub_id,
-                "plans_total": len(plans),
-                "plans_done": sum(total.values()),
-                "request_stats": fetch_stats(),
-            })
+            atomic_write_text(
+                incomplete,
+                compact_json(
+                    {
+                        "failed_at": iso_utc_now(),
+                        "host": socket.gethostname(),
+                        "plan": str(plan),
+                        "error_type": type(exc).__name__,
+                        "error": str(exc)[:1000],
+                    }
+                )
+                + "\n",
+            )
+            write_shard_heartbeat(
+                corpus,
+                shard_id,
+                {
+                    "status": "failed",
+                    "failed_subtar": sub_id,
+                    "plans_total": len(plans),
+                    "plans_done": sum(total.values()),
+                    "request_stats": fetch_stats(),
+                },
+            )
             raise
         total.update(counts)
-        write_shard_heartbeat(corpus, shard_id, {
-            "status": "running",
-            "last_subtar": sub_id,
-            "plans_total": len(plans),
-            "plans_done": len([p for p in plans if (corpus / "state" / f"shard-{shard_id}" / f"sub-{p.name.removeprefix('sub-').removesuffix('.plan.jsonl')}.done").exists()]),
-            "status_counts": dict(total),
-            "request_stats": fetch_stats(),
-        })
+        write_shard_heartbeat(
+            corpus,
+            shard_id,
+            {
+                "status": "running",
+                "last_subtar": sub_id,
+                "plans_total": len(plans),
+                "plans_done": len(
+                    [
+                        p
+                        for p in plans
+                        if (
+                            corpus
+                            / "state"
+                            / f"shard-{shard_id}"
+                            / f"sub-{p.name.removeprefix('sub-').removesuffix('.plan.jsonl')}.done"
+                        ).exists()
+                    ]
+                ),
+                "status_counts": dict(total),
+                "request_stats": fetch_stats(),
+            },
+        )
         log(f"shard {shard_id} sub {sub_id}: {dict(counts)}")
     if full_shard_run:
         shard_done = corpus / "state" / f"shard-{shard_id}.done"
-        atomic_write_text(shard_done, compact_json({
-            "finished_at": iso_utc_now(),
-            "host": socket.gethostname(),
-            "shard": shard_id,
-            "plans_total": len(plans),
-            "status_counts": dict(total),
-        }) + "\n")
+        atomic_write_text(
+            shard_done,
+            compact_json(
+                {
+                    "finished_at": iso_utc_now(),
+                    "host": socket.gethostname(),
+                    "shard": shard_id,
+                    "plans_total": len(plans),
+                    "status_counts": dict(total),
+                }
+            )
+            + "\n",
+        )
     log(f"done shard {shard_id}: {dict(total)}")
     return 0
 

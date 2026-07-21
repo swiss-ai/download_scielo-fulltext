@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Partition SciELO manifest rows into shard/subtar plans."""
+
 from __future__ import annotations
 
 import argparse
@@ -64,19 +65,22 @@ def main() -> None:
             shard_counts[shard] += len(plan_rows)
             plans += 1
 
-    atomic_write_json(meta_path, {
-        "created_at": iso_utc_now(),
-        "manifest": str(manifest),
-        "n_shards": args.n_shards,
-        "sub_count_per_shard": sub_count,
-        "articles_per_subtar_target": args.articles_per_subtar,
-        "pad_shard": pad_shard,
-        "pad_sub": pad_sub,
-        "total_articles": len(rows),
-        "plans_written": plans,
-        "status_filter": sorted(statuses),
-        "shard_article_counts": shard_counts,
-    })
+    atomic_write_json(
+        meta_path,
+        {
+            "created_at": iso_utc_now(),
+            "manifest": str(manifest),
+            "n_shards": args.n_shards,
+            "sub_count_per_shard": sub_count,
+            "articles_per_subtar_target": args.articles_per_subtar,
+            "pad_shard": pad_shard,
+            "pad_sub": pad_sub,
+            "total_articles": len(rows),
+            "plans_written": plans,
+            "status_filter": sorted(statuses),
+            "shard_article_counts": shard_counts,
+        },
+    )
     print(f"wrote {plans} plan files for {len(rows)} articles under {out_dir}")
     print(f"meta: {meta_path}")
 

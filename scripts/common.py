@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Shared helpers for SciELO full-text download scripts."""
+
 from __future__ import annotations
 
-import gzip
 import collections
 import fcntl
+import gzip
 import hashlib
 import html
 import json
@@ -15,10 +16,10 @@ import sys
 import threading
 import time
 import xml.etree.ElementTree as ET
-from http.client import HTTPException, IncompleteRead
+from http.client import HTTPException
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import parse_qs, urlencode, urljoin, urlparse, urlsplit, urlunsplit, unquote
+from urllib.parse import parse_qs, unquote, urlencode, urljoin, urlparse, urlsplit, urlunsplit
 from urllib.request import ProxyHandler, Request, build_opener
 
 XLINK_HREF = "{http://www.w3.org/1999/xlink}href"
@@ -116,7 +117,9 @@ def build_user_agent(user_agent: str | None = None, contact_email: str | None = 
     parts = ["project=https://github.com/swiss-ai/apertus-program"]
     if contact:
         parts.insert(0, f"mailto:{contact}")
-    run_id = os.environ.get("RUN_ID") or os.environ.get("RUNAI_JOB_NAME") or os.environ.get("HOSTNAME")
+    run_id = (
+        os.environ.get("RUN_ID") or os.environ.get("RUNAI_JOB_NAME") or os.environ.get("HOSTNAME")
+    )
     if run_id:
         safe_run = re.sub(r"[^A-Za-z0-9._:-]+", "-", run_id)[:80]
         parts.append(f"run={safe_run}")
@@ -301,12 +304,18 @@ class SharedRateLimiter:
 
 
 class ProxyPool:
-    def __init__(self, proxies: list[str], rpm_per_proxy: int, shared_rate_dir: str | Path | None = None):
+    def __init__(
+        self, proxies: list[str], rpm_per_proxy: int, shared_rate_dir: str | Path | None = None
+    ):
         if not proxies:
             raise ValueError("ProxyPool requires at least one proxy")
         self.proxies = proxies
         self.rpm_per_proxy = rpm_per_proxy
-        shared_raw = shared_rate_dir or os.environ.get("PROXY_SHARED_RATE_DIR") or os.environ.get("SHARED_PROXY_RATE_DIR")
+        shared_raw = (
+            shared_rate_dir
+            or os.environ.get("PROXY_SHARED_RATE_DIR")
+            or os.environ.get("SHARED_PROXY_RATE_DIR")
+        )
         self.shared_rate_dir = Path(shared_raw) if shared_raw else None
         limiter_cls = SharedRateLimiter if self.shared_rate_dir else RateLimiter
         self.limiters = {
@@ -322,8 +331,17 @@ class ProxyPool:
             self.pick_window = max(1, int(os.environ.get("PROXY_PICK_WINDOW", default_window)))
         except ValueError:
             self.pick_window = int(default_window)
-        seed = os.environ.get("PROXY_POOL_OFFSET") or os.environ.get("SHARD_ID") or os.environ.get("RUNAI_JOB_NAME") or ""
-        self.offset = int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16) if seed else random.randrange(len(proxies))
+        seed = (
+            os.environ.get("PROXY_POOL_OFFSET")
+            or os.environ.get("SHARD_ID")
+            or os.environ.get("RUNAI_JOB_NAME")
+            or ""
+        )
+        self.offset = (
+            int(hashlib.sha256(seed.encode("utf-8")).hexdigest()[:8], 16)
+            if seed
+            else random.randrange(len(proxies))
+        )
 
     def _candidate_indices(self, url_index: int, attempt: int) -> list[int]:
         n = len(self.proxies)
@@ -337,12 +355,16 @@ class ProxyPool:
 
     def pick(self, url_index: int, attempt: int = 0) -> tuple[str, RateLimiter]:
         candidates = self._candidate_indices(url_index, attempt)
-        best_idx = min(candidates, key=lambda i: (self.limiters[self.proxies[i]].expected_wait(), i))
+        best_idx = min(
+            candidates, key=lambda i: (self.limiters[self.proxies[i]].expected_wait(), i)
+        )
         proxy = self.proxies[best_idx]
         return proxy, self.limiters[proxy]
 
 
-def retry_sleep(attempt: int, base: float = 1.0, cap: float = 60.0, retry_after: float | None = None) -> None:
+def retry_sleep(
+    attempt: int, base: float = 1.0, cap: float = 60.0, retry_after: float | None = None
+) -> None:
     if retry_after is not None:
         time.sleep(min(cap, retry_after))
         return
@@ -451,10 +473,7 @@ def first_by_local(root: ET.Element, *names: str) -> ET.Element | None:
 
 def attr_href(el: ET.Element) -> str:
     return (
-        el.attrib.get(XLINK_HREF)
-        or el.attrib.get("href")
-        or el.attrib.get("xlink:href")
-        or ""
+        el.attrib.get(XLINK_HREF) or el.attrib.get("href") or el.attrib.get("xlink:href") or ""
     ).strip()
 
 
@@ -483,17 +502,21 @@ def choose_fulltext(fulltexts: dict) -> tuple[str, str]:
 def xml_url_from_final(final_url: str, lang: str) -> str:
     split = urlsplit(final_url)
     query = parse_qs(split.query)
-    chosen_lang = (lang or (query.get("lang") or query.get("tlng") or query.get("lng") or ["en"])[0] or "en")
+    chosen_lang = (
+        lang or (query.get("lang") or query.get("tlng") or query.get("lng") or ["en"])[0] or "en"
+    )
     pid = (query.get("pid") or [""])[0]
     script = (query.get("script") or [""])[0]
     if split.path.endswith("/scielo.php") and pid and script == "sci_arttext":
-        return urlunsplit((
-            split.scheme,
-            split.netloc,
-            "/scieloOrg/php/articleXML.php",
-            urlencode({"pid": pid, "lang": chosen_lang}),
-            "",
-        ))
+        return urlunsplit(
+            (
+                split.scheme,
+                split.netloc,
+                "/scieloOrg/php/articleXML.php",
+                urlencode({"pid": pid, "lang": chosen_lang}),
+                "",
+            )
+        )
     new_query = urlencode({"format": "xml", "lang": chosen_lang})
     return urlunsplit((split.scheme, split.netloc, split.path, new_query, ""))
 
@@ -607,7 +630,12 @@ def media_urls(article: ET.Element, base_url: str) -> list[str]:
 
 def rewrite_media(article: ET.Element, url_to_member: dict[str, str], base_url: str) -> None:
     for el in article.iter():
-        if localname(el.tag) not in {"graphic", "inline-graphic", "media", "supplementary-material"}:
+        if localname(el.tag) not in {
+            "graphic",
+            "inline-graphic",
+            "media",
+            "supplementary-material",
+        }:
             continue
         href = attr_href(el)
         if not href:

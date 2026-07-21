@@ -87,16 +87,20 @@ python3 scripts/verify_shard.py \
 ## 5. Aggregate And Estimate
 
 ```bash
-python3 scripts/aggregate_manifest.py --corpus-root "$CORPUS_ROOT"
+uv run python scripts/aggregate_manifest.py --corpus-root "$CORPUS_ROOT"
 
-python3 scripts/estimate_volume.py \
-  --manifest "$CORPUS_ROOT/manifest.jsonl" \
+uv run python scripts/estimate_volume.py \
+  --manifest "$CORPUS_ROOT/manifest.parquet" \
   --total-identifiers 1409144
 ```
 
 Use `ok` and `no_figures` as complete accepted statuses. Retry
 `partial_figures` and `figures_failed`; do not publish them as complete
 figure-inclusive content.
+
+Verify `manifest.parquet.summary.json`, its SHA-256, exact seed/final row
+reconciliation, and unique identities. Restrictive, missing, or unknown
+licenses remain audit rows and are never converter work items.
 
 ## 6. Recovery
 

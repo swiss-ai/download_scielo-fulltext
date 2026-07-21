@@ -1,12 +1,20 @@
 #!/usr/bin/env python3
 """Build a SciELO seed manifest from ArticleMeta rows."""
+
 from __future__ import annotations
 
 import argparse
 import collections
 from pathlib import Path
 
-from common import atomic_write_json, choose_fulltext, iso_utc_now, read_jsonl, source_id, write_jsonl
+from common import (
+    atomic_write_json,
+    choose_fulltext,
+    iso_utc_now,
+    read_jsonl,
+    source_id,
+    write_jsonl,
+)
 
 
 def is_completed_jsonl(path: Path) -> bool:
@@ -98,13 +106,16 @@ def main() -> None:
         counters[status] += 1
 
     n = write_jsonl(output, rows)
-    atomic_write_json(summary_path, {
-        "created_at": iso_utc_now(),
-        "input": str(src),
-        "output": str(output),
-        "rows_written": n,
-        "status_counts": dict(counters),
-    })
+    atomic_write_json(
+        summary_path,
+        {
+            "created_at": iso_utc_now(),
+            "input": str(src),
+            "output": str(output),
+            "rows_written": n,
+            "status_counts": dict(counters),
+        },
+    )
     print(f"wrote {n} rows to {output}")
     print(f"summary: {summary_path}")
 

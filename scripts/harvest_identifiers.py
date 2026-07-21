@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Harvest SciELO ArticleMeta article identifier pages."""
+
 from __future__ import annotations
 
 import argparse
@@ -97,19 +98,22 @@ def main() -> None:
         atomic_write_bytes(page_path, gzip.compress(data, compresslevel=6))
         next_offset = offset + len(objects)
         complete = not objects or (total and next_offset >= total)
-        atomic_write_json(state_path, {
-            "complete": complete,
-            "from": args.date_from,
-            "until": args.date_until,
-            "collection": args.collection,
-            "last_http_status": status,
-            "last_final_url": final_url,
-            "last_page_records": len(objects),
-            "next_offset": next_offset,
-            "next_page": page + 1,
-            "reported_total": total,
-            "updated_at": iso_utc_now(),
-        })
+        atomic_write_json(
+            state_path,
+            {
+                "complete": complete,
+                "from": args.date_from,
+                "until": args.date_until,
+                "collection": args.collection,
+                "last_http_status": status,
+                "last_final_url": final_url,
+                "last_page_records": len(objects),
+                "next_offset": next_offset,
+                "next_page": page + 1,
+                "reported_total": total,
+                "updated_at": iso_utc_now(),
+            },
+        )
         log(f"{label} page={page} offset={offset} records={len(objects)} total={total}")
         if complete:
             return
