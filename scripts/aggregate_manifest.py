@@ -72,6 +72,27 @@ def _prefer(worker: dict[str, Any], seed: dict[str, Any], key: str) -> Any:
     return value if value not in (None, "", [], {}) else seed.get(key)
 
 
+def _strings(*values: Any) -> list[str]:
+    """Flatten, trim, and de-duplicate retained source evidence."""
+    output: list[str] = []
+    for value in values:
+        candidates = value if isinstance(value, list) else [value]
+        for candidate in candidates:
+            text = str(candidate or "").strip()
+            if text and text not in output:
+                output.append(text)
+    return output
+
+
+def _license_codes_agree(codes: list[str]) -> bool:
+    unique = set(codes)
+    if len(unique) <= 1:
+        return True
+    if not all(code == "CC-BY" or code.startswith("CC-BY-") for code in unique):
+        return False
+    return len({code for code in unique if code != "CC-BY"}) <= 1
+
+
 def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dict[str, Any]:
     seed = seed or {}
     source_id = str(worker.get("source_id") or seed.get("source_id") or "")
@@ -79,18 +100,35 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         raise ValueError("manifest row without source_id")
     source_status = str(worker.get("status") or "")
     status, reason_code, retryable = _status(source_status, worker)
-    license_raw = (
-        str(
-            _prefer(worker, seed, "license_text") or _prefer(worker, seed, "license_code") or ""
-        ).strip()
-        or None
+    license_texts = _strings(
+        worker.get("license_text"),
+        worker.get("license_code"),
+        seed.get("license_text"),
+        seed.get("license_code"),
     )
-    license_urls = [str(value) for value in (_prefer(worker, seed, "license_urls") or []) if value]
-    decision = decide_license(
-        license_raw,
-        evidence_url=license_urls[0] if license_urls else None,
-        evidence_source="scielo_jats",
+    license_urls = _strings(worker.get("license_urls"), seed.get("license_urls"))
+    license_raw = " ".join(_strings(*license_texts, *license_urls)) or None
+    individual_decisions = [
+        decide_license(value, evidence_source="scielo_jats")
+        for value in (*license_texts, *license_urls)
+    ]
+    # A permissive URL must not mask an explicit NC/ND/SA source field.
+    # Otherwise use the complete retained record so generic attribution prose
+    # can be resolved by an accompanying exact Creative Commons URL.
+    decision = next(
+        (item for item in individual_decisions if item.reason == "restrictive_license"),
+        decide_license(
+            license_raw,
+            evidence_url=license_urls[0] if license_urls else None,
+            evidence_source="scielo_jats",
+        ),
     )
+    evidence_codes = [
+        item.normalized_code
+        for item in individual_decisions
+        if item.allowed and item.normalized_code
+    ]
+    license_evidence_conflict = not _license_codes_agree(evidence_codes)
     if status in {"complete", "partial"} and not decision.allowed:
         status, reason_code, retryable = "rejected", decision.reason, False
     figures = [item for item in worker.get("figures") or [] if isinstance(item, dict)]
@@ -175,8 +213,8 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         "quality_flags": sorted(set(quality_flags)),
         "source_meta_json": json.dumps(evidence, ensure_ascii=False, sort_keys=True),
     }
-    if normalized["status"] in {"complete", "partial"} and not manifest_row_is_convertible(
-        normalized
+    if normalized["status"] in {"complete", "partial"} and (
+        license_evidence_conflict or not manifest_row_is_convertible(normalized)
     ):
         normalized["status"] = "quarantined"
         normalized["reason_code"] = "license_evidence_inconsistent"

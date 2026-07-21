@@ -82,6 +82,53 @@ def test_complete_package_with_restrictive_license_is_rejected():
     assert row["license_evidence"]["allowed"] is False
 
 
+def test_generic_attribution_prose_uses_exact_cc_url():
+    row = normalize_record(
+        _worker(
+            license_code=None,
+            license_text=(
+                "This is an open-access article distributed under the terms of "
+                "the Creative Commons Attribution License"
+            ),
+            license_urls=["https://creativecommons.org/licenses/by/4.0/"],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "complete"
+    assert row["license_code"] == "CC-BY-4.0"
+    assert row["license_urls"] == ["https://creativecommons.org/licenses/by/4.0/"]
+
+
+def test_permissive_url_does_not_mask_restrictive_text():
+    row = normalize_record(
+        _worker(
+            license_code=None,
+            license_text="CC BY 4.0 nd",
+            license_urls=["https://creativecommons.org/licenses/by/4.0/"],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "rejected"
+    assert row["reason_code"] == "restrictive_license"
+    assert row["license_code"] == "CC-BY-ND-4.0"
+
+
+def test_worker_and_seed_license_urls_are_both_retained_and_checked():
+    row = normalize_record(
+        _worker(license_urls=["https://creativecommons.org/licenses/by/4.0/"]),
+        _seed(license_urls=["https://creativecommons.org/licenses/by/3.0/"]),
+    )
+
+    assert row["status"] == "quarantined"
+    assert row["reason_code"] == "license_evidence_inconsistent"
+    assert row["license_urls"] == [
+        "https://creativecommons.org/licenses/by/4.0/",
+        "https://creativecommons.org/licenses/by/3.0/",
+    ]
+
+
 def test_complete_package_with_conflicting_permissive_versions_is_quarantined():
     row = normalize_record(
         _worker(
