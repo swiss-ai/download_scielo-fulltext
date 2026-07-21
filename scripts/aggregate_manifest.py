@@ -16,6 +16,7 @@ from common import atomic_write_json, iso_utc_now, read_jsonl
 from docgraph import (
     MANIFEST_SCHEMA_VERSION,
     decide_license,
+    manifest_row_is_convertible,
     write_manifest_parquet_stream,
 )
 
@@ -136,7 +137,7 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
     evidence = {"seed_record": seed, "worker_record": worker}
     record_json = _canonical_json(evidence)
     source_url = _prefer(worker, seed, "fulltext_html_url") or worker.get("xml_url")
-    return {
+    normalized = {
         "source": "scielo",
         "source_id": source_id,
         "status": status,
@@ -174,6 +175,16 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         "quality_flags": sorted(set(quality_flags)),
         "source_meta_json": json.dumps(evidence, ensure_ascii=False, sort_keys=True),
     }
+    if normalized["status"] in {"complete", "partial"} and not manifest_row_is_convertible(
+        normalized
+    ):
+        normalized["status"] = "quarantined"
+        normalized["reason_code"] = "license_evidence_inconsistent"
+        normalized["retryable"] = False
+        normalized["quality_flags"] = sorted(
+            set([*normalized["quality_flags"], "license_evidence_inconsistent"])
+        )
+    return normalized
 
 
 def _seed_database(seed_path: Path, database_path: Path) -> sqlite3.Connection:

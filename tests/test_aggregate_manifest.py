@@ -82,6 +82,22 @@ def test_complete_package_with_restrictive_license_is_rejected():
     assert row["license_evidence"]["allowed"] is False
 
 
+def test_complete_package_with_conflicting_permissive_versions_is_quarantined():
+    row = normalize_record(
+        _worker(
+            license_code="CC BY 4.0",
+            license_text="Creative Commons Attribution 4.0",
+            license_urls=["https://creativecommons.org/licenses/by/3.0/"],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "quarantined"
+    assert row["reason_code"] == "license_evidence_inconsistent"
+    assert row["retryable"] is False
+    assert "license_evidence_inconsistent" in row["quality_flags"]
+
+
 def test_load_rows_joins_seed_and_preserves_retry_history(tmp_path):
     seed_path = tmp_path / "seed.jsonl"
     worker_path = tmp_path / "sub-000.jsonl"
