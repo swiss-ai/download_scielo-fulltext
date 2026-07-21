@@ -67,6 +67,21 @@ def test_normalize_record_enriches_worker_from_seed():
     assert evidence["seed_record"]["fulltexts"]["es"] == "https://example.test/article"
 
 
+def test_complete_package_with_restrictive_license_is_rejected():
+    row = normalize_record(
+        _worker(
+            license_code="CC BY-NC 4.0",
+            license_text="Creative Commons Attribution NonCommercial 4.0",
+            license_urls=[],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "rejected"
+    assert row["reason_code"] == "restrictive_license"
+    assert row["license_evidence"]["allowed"] is False
+
+
 def test_load_rows_joins_seed_and_preserves_retry_history(tmp_path):
     seed_path = tmp_path / "seed.jsonl"
     worker_path = tmp_path / "sub-000.jsonl"

@@ -90,6 +90,8 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         evidence_url=license_urls[0] if license_urls else None,
         evidence_source="scielo_jats",
     )
+    if status in {"complete", "partial"} and not decision.allowed:
+        status, reason_code, retryable = "rejected", decision.reason, False
     figures = [item for item in worker.get("figures") or [] if isinstance(item, dict)]
     package_members = [str(value) for value in worker.get("package_members") or [] if value]
     if not package_members:
