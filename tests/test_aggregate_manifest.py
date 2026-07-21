@@ -129,6 +129,37 @@ def test_worker_and_seed_license_urls_are_both_retained_and_checked():
     ]
 
 
+def test_embedded_attribution_version_conflict_is_quarantined():
+    row = normalize_record(
+        _worker(
+            license_code=None,
+            license_text=(
+                "This is an Open Access article distributed under the terms of "
+                "the Creative Commons Attribution 4.0 international License."
+            ),
+            license_urls=["http://creativecommons.org/licenses/by/3.0/"],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "quarantined"
+    assert row["reason_code"] == "license_evidence_inconsistent"
+
+
+def test_nonexistent_cc_version_is_not_admitted():
+    row = normalize_record(
+        _worker(
+            license_code=None,
+            license_text="Este é um artigo publicado sob uma licença Creative Commons",
+            license_urls=["https://creativecommons.org/licenses/by/40/"],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "rejected"
+    assert row["reason_code"] == "unknown_license"
+
+
 def test_complete_package_with_conflicting_permissive_versions_is_quarantined():
     row = normalize_record(
         _worker(

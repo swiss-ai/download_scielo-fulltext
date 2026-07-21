@@ -16,6 +16,7 @@ from common import atomic_write_json, iso_utc_now, read_jsonl
 from docgraph import (
     MANIFEST_SCHEMA_VERSION,
     decide_license,
+    license_codes_agree,
     manifest_row_is_convertible,
     write_manifest_parquet_stream,
 )
@@ -84,15 +85,6 @@ def _strings(*values: Any) -> list[str]:
     return output
 
 
-def _license_codes_agree(codes: list[str]) -> bool:
-    unique = set(codes)
-    if len(unique) <= 1:
-        return True
-    if not all(code == "CC-BY" or code.startswith("CC-BY-") for code in unique):
-        return False
-    return len({code for code in unique if code != "CC-BY"}) <= 1
-
-
 def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dict[str, Any]:
     seed = seed or {}
     source_id = str(worker.get("source_id") or seed.get("source_id") or "")
@@ -128,7 +120,7 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         for item in individual_decisions
         if item.allowed and item.normalized_code
     ]
-    license_evidence_conflict = not _license_codes_agree(evidence_codes)
+    license_evidence_conflict = not license_codes_agree(evidence_codes)
     if status in {"complete", "partial"} and not decision.allowed:
         status, reason_code, retryable = "rejected", decision.reason, False
     figures = [item for item in worker.get("figures") or [] if isinstance(item, dict)]
