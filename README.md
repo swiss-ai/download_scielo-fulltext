@@ -19,7 +19,7 @@ per-subtar manifests, verification, and recovery-friendly state markers.
 
 All RCP submission helpers require an immutable `@sha256:` image reference.
 They refuse unset images and mutable tags, while image publishing requires an
-explicit release or commit tag and digest-pinned base image.
+explicit non-generic tag, digest-pinned base image, and full source commit.
 
 ## Safety Defaults
 

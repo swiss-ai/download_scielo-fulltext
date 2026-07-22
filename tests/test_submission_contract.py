@@ -25,7 +25,12 @@ def test_image_build_requires_explicit_tag_and_immutable_base() -> None:
     assert 'BASE_IMAGE="${BASE_IMAGE:-}"' in publish
     assert "${TAG:?TAG is required; use a release or commit tag}" in publish
     assert "${BASE_IMAGE:?BASE_IMAGE is required and must be pinned by sha256 digest}" in publish
+    source_commit_contract = (
+        "${SOURCE_COMMIT:?SOURCE_COMMIT is required and must be the full downloader commit}"
+    )
+    assert source_commit_contract in publish
     assert '[[ "${BASE_IMAGE}" != *@sha256:* ]]' in publish
     assert "ARG BASE_IMAGE\n" in dockerfile
     assert "Pillow==12.3.0" in dockerfile
+    assert "org.opencontainers.image.revision" in dockerfile
     assert "mlo-base:uv1" not in dockerfile
