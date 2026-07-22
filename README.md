@@ -17,6 +17,10 @@ This repo follows the operational style of `download_copernicus-publications`:
 raw source pages, explicit manifests, deterministic shard plans, tar packing,
 per-subtar manifests, verification, and recovery-friendly state markers.
 
+All RCP submission helpers require an immutable `@sha256:` image reference.
+They refuse unset images and mutable tags, while image publishing requires an
+explicit release or commit tag and digest-pinned base image.
+
 ## Safety Defaults
 
 Proxy use is mandatory. Scripts that make external HTTP requests refuse to run

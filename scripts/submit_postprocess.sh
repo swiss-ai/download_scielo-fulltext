@@ -7,7 +7,7 @@ REPO_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 EPFML_DIR="${EPFML_DIR:-${HOME}/dev/epfml-getting-started}"
 LOCAL_META="${LOCAL_META:-${REPO_DIR}/config/shards.meta.json}"
 
-IMAGE="${IMAGE:-registry.rcp.epfl.ch/scielo-fulltext/downloader:1}"
+IMAGE="${IMAGE:-}"
 CORPUS_ROOT="${CORPUS_ROOT:-/mloscratch/scielo-fulltext}"
 RCP_USER="${RCP_USER:-${USER:-}}"
 POD_REPO_DIR="${POD_REPO_DIR:-/mloscratch/homes/${RCP_USER}/download_scielo-fulltext}"
@@ -28,7 +28,7 @@ Usage:
 Options:
   --dry-run             Print csub.py commands; submit nothing
   --yes-all             For verify mode, submit every shard from metadata
-  --image IMG           Override image
+  --image IMG           Required digest-pinned runtime image
   --epfml-dir PATH      Path to epfml-getting-started
   --timeout T           csub.py -t (default: ${TIMEOUT})
   --cpus N              csub.py --cpus (default: ${CPUS_PER_POD})
@@ -91,6 +91,12 @@ while [[ $# -gt 0 ]]; do
     *) EXPLICIT_IDS+=("$1"); shift ;;
   esac
 done
+
+: "${IMAGE:?IMAGE is required and must be pinned by sha256 digest}"
+if [[ "${IMAGE}" != *@sha256:* ]]; then
+  echo "ERROR: IMAGE must be pinned by sha256 digest; mutable tags are not allowed." >&2
+  exit 1
+fi
 
 if [[ -d "${EPFML_DIR}" ]]; then
   EPFML_DIR="$(cd "${EPFML_DIR}" && pwd)"

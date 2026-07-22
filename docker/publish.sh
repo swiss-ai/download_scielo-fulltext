@@ -5,10 +5,18 @@ set -euo pipefail
 
 REGISTRY="${REGISTRY:-registry.rcp.epfl.ch}"
 IMAGE_PATH="${IMAGE_PATH:-scielo-fulltext/downloader}"
-TAG="${TAG:-1}"
+TAG="${TAG:-}"
 PLATFORM="${PLATFORM:-linux/amd64}"
 PUSH="${PUSH:-1}"
-BASE_IMAGE="${BASE_IMAGE:-ic-registry.epfl.ch/mlo/mlo-base:uv1}"
+BASE_IMAGE="${BASE_IMAGE:-}"
+
+: "${TAG:?TAG is required; use a release or commit tag}"
+: "${BASE_IMAGE:?BASE_IMAGE is required and must be pinned by sha256 digest}"
+if [[ "${BASE_IMAGE}" != *@sha256:* ]]; then
+  echo "ERROR: BASE_IMAGE must be pinned by sha256 digest; mutable tags are not allowed." >&2
+  exit 1
+fi
+
 FULL_IMAGE="${REGISTRY}/${IMAGE_PATH}:${TAG}"
 
 HERE="$(cd "$(dirname "$0")" && pwd)"

@@ -6,6 +6,7 @@
 export PROXY_FILE=/path/to/proxies.txt
 export SCIELO_CONTACT_EMAIL=you@example.org
 export RPM_PER_PROXY=10
+export IMAGE='registry.rcp.epfl.ch/scielo-fulltext/downloader@sha256:<digest>'
 ```
 
 No external-fetch script runs without a proxy.
