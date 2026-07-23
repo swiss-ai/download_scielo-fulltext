@@ -7,6 +7,7 @@ import sys
 import tarfile
 from pathlib import Path
 
+import pyarrow.parquet as pq
 from docgraph import validate_manifest_rows
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
@@ -16,6 +17,9 @@ from aggregate_manifest import (  # noqa: E402
     normalize_record,
 )
 from backfill_manifest_provenance import bind_backfill_attribution  # noqa: E402
+from backfill_manifest_provenance_bounded import (  # noqa: E402
+    backfill_manifest_bounded,
+)
 
 
 def _seed(**updates):
@@ -199,6 +203,107 @@ def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
     assert evidence["input_manifest_commit"] == "manifest-commit"
     assert evidence["input_manifest_sha256"] == "a" * 64
     assert evidence["enrichment_commit"] == "enrichment-commit"
+
+
+def test_bounded_backfill_preserves_rejected_rows_and_enriches_admitted(tmp_path):
+    accepted_files = [
+        ("scielo-scl-S0001/article.xml", b"<article/>"),
+        ("scielo-scl-S0001/source.json", b'{"source":"scielo"}\n'),
+    ]
+    rejected_files = [
+        ("scielo-scl-S0002/article.xml", b"<article/>"),
+        ("scielo-scl-S0002/source.json", b'{"source":"scielo"}\n'),
+    ]
+    tar_path = tmp_path / "corpus/data/shard-01/sub-002.tar"
+    tar_path.parent.mkdir(parents=True)
+    with tarfile.open(tar_path, "w") as archive:
+        for member, data in [
+            accepted_files[1],
+            accepted_files[0],
+            *rejected_files,
+        ]:
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+
+    accepted = normalize_record(
+        _worker(
+            package_members=[member for member, _data in accepted_files],
+        ),
+        _seed(),
+    )
+    rejected = normalize_record(
+        _worker(
+            source_id="scielo-scl-S0002",
+            pid="S0002",
+            package_members=[member for member, _data in rejected_files],
+            xml_member=rejected_files[0][0],
+            source_member=rejected_files[1][0],
+            license_code="CC BY-NC",
+            license_text="Creative Commons Attribution-NonCommercial 4.0",
+            license_urls=[
+                "https://creativecommons.org/licenses/by-nc/4.0/"
+            ],
+        ),
+        _seed(source_id="scielo-scl-S0002", pid="S0002"),
+    )
+    assert rejected["status"] == "rejected"
+    from docgraph import write_manifest_parquet
+
+    input_path = tmp_path / "input.parquet"
+    output_path = tmp_path / "output.parquet"
+    write_manifest_parquet([rejected, accepted], input_path)
+    rejected_json = json.dumps(
+        next(
+            row
+            for row in pq.read_table(input_path).to_pylist()
+            if row["source_id"] == "scielo-scl-S0002"
+        ),
+        ensure_ascii=False,
+        sort_keys=True,
+    )
+    summary = backfill_manifest_bounded(
+        input_path=input_path,
+        output_path=output_path,
+        corpus_root=tmp_path / "corpus",
+        database_path=tmp_path / "backfill.sqlite",
+        historical_package_producer_attribution="historical-unavailable",
+        input_manifest_commit="manifest-commit",
+        enrichment_commit="enrichment-commit",
+        batch_size=1,
+    )
+
+    rows = {
+        row["source_id"]: row for row in pq.read_table(output_path).to_pylist()
+    }
+    admitted = rows["scielo-scl-S0001"]
+    assert admitted["source_package_hash"] == _package_hash(accepted_files)
+    assert set(dict(admitted["hashes"])) == {
+        member for member, _data in accepted_files
+    }
+    evidence = json.loads(admitted["source_meta_json"])[
+        "package_provenance_backfill"
+    ]
+    assert evidence["historical_tar_member_order"] == [
+        accepted_files[1][0],
+        accepted_files[0][0],
+    ]
+    assert evidence["historical_tar_member_order_differed"] is True
+    assert evidence["input_manifest_commit"] == "manifest-commit"
+    assert evidence["enrichment_commit"] == "enrichment-commit"
+    assert (
+        json.dumps(
+            rows["scielo-scl-S0002"],
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        == rejected_json
+    )
+    assert summary["rows"] == 2
+    assert summary["admitted_rows"] == 1
+    assert summary["admitted_rows_enriched"] == 1
+    assert summary["nonadmitted_rows_unchanged"] is True
+    assert summary["historical_tar_order_differed_rows"] == 1
 
 
 def test_backfill_package_hash_uses_canonical_not_physical_tar_order(tmp_path):
