@@ -82,7 +82,8 @@ python3 scripts/verify_shard.py \
   --shard-id 0
 
 uv run python scripts/aggregate_manifest.py \
-  --corpus-root "$ROOT"
+  --corpus-root "$ROOT" \
+  --backfill-package-provenance
 
 uv run python scripts/estimate_volume.py \
   --manifest "$ROOT/manifest.parquet" \
@@ -108,6 +109,13 @@ The root Parquet aggregate is required and uses the shared versioned
 `docgraph` schema. It joins worker outcomes back to the ArticleMeta seed so
 failed/rejected records retain source metadata. Conversion reads this manifest
 and admits only rows with explicit allowlisted-license evidence.
+
+Fresh packages record SHA-256 for every ordered tar member, exact member/file
+and byte totals, and one deterministic hash over member names plus payload
+bytes. `--backfill-package-provenance` recovers the same contract from
+historical tars while selecting only license-admitted packages for extraction.
+The converter verifies every member and the aggregate package hash before
+parsing. A release manifest without this provenance is incomplete.
 
 Tar members:
 

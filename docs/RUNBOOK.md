@@ -88,7 +88,9 @@ python3 scripts/verify_shard.py \
 ## 5. Aggregate And Estimate
 
 ```bash
-uv run python scripts/aggregate_manifest.py --corpus-root "$CORPUS_ROOT"
+uv run python scripts/aggregate_manifest.py \
+  --corpus-root "$CORPUS_ROOT" \
+  --backfill-package-provenance
 
 uv run python scripts/estimate_volume.py \
   --manifest "$CORPUS_ROOT/manifest.parquet" \
@@ -102,6 +104,10 @@ figure-inclusive content.
 Verify `manifest.parquet.summary.json`, its SHA-256, exact seed/final row
 reconciliation, and unique identities. Restrictive, missing, or unknown
 licenses remain audit rows and are never converter work items.
+
+The release manifest must have `source_package_hash`, full member-keyed
+`hashes`, `file_count`, and `total_bytes` for every admitted row. Historical
+backfill streams each subtar once and does not select rejected package members.
 
 ## 6. Recovery
 

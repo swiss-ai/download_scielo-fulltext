@@ -8,7 +8,8 @@ import hashlib
 import json
 import sqlite3
 import sys
-from collections import Counter
+import tarfile
+from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any, Iterable, Iterator
 
@@ -157,13 +158,28 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         }.items()
         if value not in (None, "")
     }
-    hashes = (
-        {
-            "xml_sha256": str(worker["xml_sha256"]),
-        }
-        if worker.get("xml_sha256")
-        else {}
-    )
+    hashes = {
+        str(key): str(value)
+        for key, value in dict(worker.get("hashes") or {}).items()
+    }
+    if not hashes and worker.get("xml_sha256"):
+        hashes = {"xml_sha256": str(worker["xml_sha256"])}
+    source_package_hash = worker.get("source_package_hash") or None
+    total_bytes = _int(worker.get("total_bytes"))
+    file_count = _int(worker.get("file_count")) or len(package_members)
+    if source_package_hash:
+        if set(hashes) != set(package_members):
+            raise ValueError(
+                f"{source_id}: package member/hash keys differ"
+            )
+        if file_count != len(package_members):
+            raise ValueError(
+                f"{source_id}: package file count differs from members"
+            )
+        if total_bytes is None:
+            raise ValueError(
+                f"{source_id}: hashed package is missing total_bytes"
+            )
     evidence = {"seed_record": seed, "worker_record": worker}
     record_json = _canonical_json(evidence)
     source_url = _prefer(worker, seed, "fulltext_html_url") or worker.get("xml_url")
@@ -197,9 +213,10 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
         "expected_media_count": expected,
         "downloaded_media_count": downloaded,
         "missing_media_count": max(0, expected - downloaded),
-        "total_bytes": _int(worker.get("total_bytes")),
-        "file_count": _int(worker.get("file_count")) or len(package_members),
+        "total_bytes": total_bytes,
+        "file_count": file_count,
         "source_record_hash": hashlib.sha256(record_json.encode()).hexdigest(),
+        "source_package_hash": source_package_hash,
         "hashes": hashes,
         "fetched_at": worker.get("fetched_at") or None,
         "quality_flags": sorted(set(quality_flags)),
@@ -215,6 +232,118 @@ def normalize_record(worker: dict[str, Any], seed: dict[str, Any] | None) -> dic
             set([*normalized["quality_flags"], "license_evidence_inconsistent"])
         )
     return normalized
+
+
+def _update_package_digest(digest: Any, member: str, data: bytes) -> None:
+    member_bytes = member.encode("utf-8")
+    digest.update(len(member_bytes).to_bytes(8, "big"))
+    digest.update(member_bytes)
+    digest.update(len(data).to_bytes(8, "big"))
+    digest.update(data)
+
+
+def backfill_package_provenance(
+    rows: list[dict[str, Any]],
+    corpus: Path,
+) -> int:
+    """Recover exact admitted-package hashes from one or more historical tars.
+
+    License admission has already run in ``normalize_record``. Rejected and
+    quarantined package members are never selected for extraction here.
+    """
+
+    grouped: dict[str, list[int]] = defaultdict(list)
+    for index, row in enumerate(rows):
+        if not manifest_row_is_convertible(row):
+            continue
+        members = [str(value) for value in row.get("package_members") or []]
+        if not members or row.get("source_package_hash"):
+            continue
+        tar_path = str(row.get("tar_path") or "")
+        if not tar_path:
+            raise ValueError(
+                f"{row.get('source_id')}: package members without tar_path"
+            )
+        grouped[tar_path].append(index)
+
+    enriched = 0
+    for tar_rel in sorted(grouped):
+        indexes = grouped[tar_rel]
+        member_owner: dict[str, int] = {}
+        states: dict[int, dict[str, Any]] = {}
+        for index in indexes:
+            expected = [
+                str(value) for value in rows[index].get("package_members") or []
+            ]
+            states[index] = {
+                "expected": expected,
+                "observed": [],
+                "hashes": {},
+                "total_bytes": 0,
+                "digest": hashlib.sha256(),
+                "identical_duplicates": 0,
+            }
+            for member in expected:
+                if member in member_owner:
+                    raise ValueError(
+                        f"duplicate package member across rows: {member}"
+                    )
+                member_owner[member] = index
+
+        archive_path = corpus / tar_rel
+        if not archive_path.is_file():
+            raise ValueError(f"missing historical package tar: {archive_path}")
+        with tarfile.open(archive_path, mode="r|") as archive:
+            for info in archive:
+                index = member_owner.get(info.name)
+                if index is None:
+                    continue
+                source = archive.extractfile(info)
+                if source is None:
+                    raise ValueError(
+                        f"unreadable package member: {tar_rel}:{info.name}"
+                    )
+                data = source.read()
+                state = states[index]
+                member_sha256 = hashlib.sha256(data).hexdigest()
+                if info.name in state["hashes"]:
+                    if state["hashes"][info.name] != member_sha256:
+                        raise ValueError(
+                            f"{rows[index].get('source_id')}: duplicate tar "
+                            f"member has different bytes: {tar_rel}:{info.name}"
+                        )
+                    state["identical_duplicates"] += 1
+                    continue
+                state["observed"].append(info.name)
+                state["hashes"][info.name] = member_sha256
+                state["total_bytes"] += len(data)
+                _update_package_digest(state["digest"], info.name, data)
+
+        for index in indexes:
+            row = rows[index]
+            state = states[index]
+            if state["observed"] != state["expected"]:
+                raise ValueError(
+                    f"{row.get('source_id')}: tar members differ: "
+                    f"expected={state['expected']!r} "
+                    f"observed={state['observed']!r}"
+                )
+            row["hashes"] = state["hashes"]
+            row["total_bytes"] = state["total_bytes"]
+            row["file_count"] = len(state["observed"])
+            row["source_package_hash"] = state["digest"].hexdigest()
+            source_meta = json.loads(row.get("source_meta_json") or "{}")
+            source_meta["package_provenance_backfill"] = {
+                "method": "streamed_tar_member_hash_v1",
+                "identical_duplicate_tar_members_ignored": state[
+                    "identical_duplicates"
+                ],
+            }
+            row["source_meta_json"] = json.dumps(
+                source_meta, ensure_ascii=False, sort_keys=True
+            )
+            enriched += 1
+    return enriched
 
 
 def _seed_database(seed_path: Path, database_path: Path) -> sqlite3.Connection:
@@ -247,6 +376,8 @@ def load_rows(
     *,
     seed_path: Path | None = None,
     seed_database_path: Path | None = None,
+    corpus: Path | None = None,
+    backfill_provenance: bool = False,
 ) -> Iterator[dict[str, Any]]:
     connection = None
     if seed_path is not None:
@@ -256,6 +387,7 @@ def load_rows(
     seen: set[str] = set()
     try:
         for path in paths:
+            normalized_rows: list[dict[str, Any]] = []
             for worker in read_jsonl(path):
                 source_id = str(worker.get("source_id") or "")
                 if not source_id:
@@ -273,7 +405,14 @@ def load_rows(
                             f"final source_id {source_id!r} missing from seed manifest"
                         )
                     seed = json.loads(result[0])
-                yield normalize_record(worker, seed)
+                normalized_rows.append(normalize_record(worker, seed))
+            if backfill_provenance:
+                if corpus is None:
+                    raise ValueError(
+                        "corpus is required when backfill_provenance is enabled"
+                    )
+                backfill_package_provenance(normalized_rows, corpus)
+            yield from normalized_rows
     finally:
         if connection is not None:
             connection.close()
@@ -293,6 +432,14 @@ def main() -> int:
     parser.add_argument("--output")
     parser.add_argument("--seed-manifest")
     parser.add_argument("--allow-empty", action="store_true")
+    parser.add_argument(
+        "--backfill-package-provenance",
+        action="store_true",
+        help=(
+            "stream admitted historical package members once to recover exact "
+            "member hashes, byte totals, and ordered package hashes"
+        ),
+    )
     args = parser.parse_args()
     corpus = Path(args.corpus_root)
     output = Path(args.output) if args.output else corpus / "manifest.parquet"
@@ -314,6 +461,8 @@ def main() -> int:
             paths,
             seed_path=seed_path,
             seed_database_path=seed_database_path,
+            corpus=corpus,
+            backfill_provenance=args.backfill_package_provenance,
         ):
             counts[row["status"]] += 1
             yield row
@@ -334,6 +483,7 @@ def main() -> int:
         "corpus_root": str(corpus),
         "seed_manifest": str(seed_path),
         "input_sub_manifests": len(paths),
+        "package_provenance_backfilled": args.backfill_package_provenance,
         "rows": row_count,
         "status_counts": dict(sorted(counts.items())),
         "output": str(output),

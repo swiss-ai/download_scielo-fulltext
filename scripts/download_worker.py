@@ -74,6 +74,18 @@ def tar_add_bytes(tar: tarfile.TarFile, name: str, data: bytes, mode: int = 0o64
     tar.addfile(info, io.BytesIO(data))
 
 
+def package_content_hash(files: list[tuple[str, bytes]]) -> str:
+    """Hash exact ordered member names and payloads with the shared contract."""
+    digest = hashlib.sha256()
+    for member, data in files:
+        member_bytes = member.encode("utf-8")
+        digest.update(len(member_bytes).to_bytes(8, "big"))
+        digest.update(member_bytes)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
 def member_with_ext(member: str, ext: str) -> str:
     base, old_ext = os.path.splitext(member)
     return base + ext if old_ext else member + ext
@@ -473,12 +485,27 @@ def process_row(
             else ("partial_figures" if downloaded else "figures_failed")
         )
     )
+    source_bytes = compact_json(source_payload).encode("utf-8") + b"\n"
+    package_files = [
+        (xml_member, packaged_xml),
+        (source_member, source_bytes),
+        *figure_files,
+    ]
+    package_hashes = {
+        member: hashlib.sha256(data).hexdigest()
+        for member, data in package_files
+    }
     return {
         **base_out,
         "status": status,
         "xml_url": xml_url,
         "xml_member": xml_member,
         "source_member": source_member,
+        "package_members": [member for member, _data in package_files],
+        "file_count": len(package_files),
+        "total_bytes": sum(len(data) for _member, data in package_files),
+        "hashes": package_hashes,
+        "source_package_hash": package_content_hash(package_files),
         "xml_bytes": len(packaged_xml),
         "xml_sha256": hashlib.sha256(packaged_xml).hexdigest(),
         "text_chars": text_chars,
@@ -512,11 +539,7 @@ def process_row(
         "figures": figure_manifest,
         "third_party_caption_flag": third_party_flag,
         "third_party_caption_terms": third_party_terms,
-        "_files": [
-            (xml_member, packaged_xml),
-            (source_member, compact_json(source_payload).encode("utf-8") + b"\n"),
-            *figure_files,
-        ],
+        "_files": package_files,
     }
 
 

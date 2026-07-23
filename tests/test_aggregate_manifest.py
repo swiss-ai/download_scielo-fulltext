@@ -1,13 +1,20 @@
 from __future__ import annotations
 
+import hashlib
+import io
 import json
 import sys
+import tarfile
 from pathlib import Path
 
 from docgraph import validate_manifest_rows
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from aggregate_manifest import load_rows, normalize_record  # noqa: E402
+from aggregate_manifest import (  # noqa: E402
+    backfill_package_provenance,
+    load_rows,
+    normalize_record,
+)
 
 
 def _seed(**updates):
@@ -65,6 +72,125 @@ def test_normalize_record_enriches_worker_from_seed():
     ]
     evidence = json.loads(row["source_meta_json"])
     assert evidence["seed_record"]["fulltexts"]["es"] == "https://example.test/article"
+
+
+def _package_hash(files: list[tuple[str, bytes]]) -> str:
+    digest = hashlib.sha256()
+    for member, data in files:
+        member_bytes = member.encode("utf-8")
+        digest.update(len(member_bytes).to_bytes(8, "big"))
+        digest.update(member_bytes)
+        digest.update(len(data).to_bytes(8, "big"))
+        digest.update(data)
+    return digest.hexdigest()
+
+
+def test_normalize_record_preserves_complete_package_provenance():
+    files = [
+        ("scielo-scl-S0001/article.xml", b"<article/>"),
+        ("scielo-scl-S0001/source.json", b"{}\n"),
+    ]
+    row = normalize_record(
+        _worker(
+            package_members=[member for member, _data in files],
+            file_count=len(files),
+            total_bytes=sum(len(data) for _member, data in files),
+            hashes={
+                member: hashlib.sha256(data).hexdigest()
+                for member, data in files
+            },
+            source_package_hash=_package_hash(files),
+        ),
+        _seed(),
+    )
+
+    assert row["source_package_hash"] == _package_hash(files)
+    assert row["hashes"] == {
+        member: hashlib.sha256(data).hexdigest()
+        for member, data in files
+    }
+    assert row["total_bytes"] == sum(len(data) for _member, data in files)
+
+
+def test_normalize_record_rejects_incomplete_package_hash_map():
+    try:
+        normalize_record(
+            _worker(
+                package_members=[
+                    "scielo-scl-S0001/article.xml",
+                    "scielo-scl-S0001/source.json",
+                ],
+                file_count=2,
+                total_bytes=12,
+                hashes={"scielo-scl-S0001/article.xml": "a" * 64},
+                source_package_hash="b" * 64,
+            ),
+            _seed(),
+        )
+    except ValueError as error:
+        assert "package member/hash keys differ" in str(error)
+    else:
+        raise AssertionError("incomplete package hash map was accepted")
+
+
+def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
+    files = [
+        ("scielo-scl-S0001/article.xml", b"<article/>"),
+        ("scielo-scl-S0001/source.json", b'{"source":"scielo"}\n'),
+        ("scielo-scl-S0001/figure-000.jpg", b"\xff\xd8figure\xff\xd9"),
+    ]
+    tar_path = tmp_path / "data/shard-01/sub-002.tar"
+    tar_path.parent.mkdir(parents=True)
+    with tarfile.open(tar_path, "w") as archive:
+        for member, data in files:
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    row = normalize_record(
+        _worker(
+            package_members=[member for member, _data in files],
+            figures=[
+                {
+                    "status": "ok",
+                    "member": "scielo-scl-S0001/figure-000.jpg",
+                }
+            ],
+            expected_figure_files=1,
+            downloaded_figure_files=1,
+        ),
+        _seed(),
+    )
+
+    assert backfill_package_provenance([row], tmp_path) == 1
+    assert row["source_package_hash"] == _package_hash(files)
+    assert row["hashes"] == {
+        member: hashlib.sha256(data).hexdigest()
+        for member, data in files
+    }
+    assert row["file_count"] == 3
+    assert row["total_bytes"] == sum(len(data) for _member, data in files)
+    evidence = json.loads(row["source_meta_json"])
+    assert evidence["package_provenance_backfill"]["method"] == (
+        "streamed_tar_member_hash_v1"
+    )
+
+
+def test_backfill_never_extracts_rejected_package(tmp_path):
+    row = normalize_record(
+        _worker(
+            license_code="CC BY-NC 4.0",
+            license_text="Creative Commons Attribution NonCommercial 4.0",
+            package_members=[
+                "scielo-scl-S0001/article.xml",
+                "scielo-scl-S0001/source.json",
+            ],
+        ),
+        _seed(),
+    )
+
+    assert row["status"] == "rejected"
+    assert backfill_package_provenance([row], tmp_path) == 0
+    assert row["source_package_hash"] is None
 
 
 def test_complete_package_with_restrictive_license_is_rejected():
