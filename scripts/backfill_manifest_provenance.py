@@ -35,7 +35,15 @@ def main() -> int:
     parser.add_argument("--input", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--corpus-root", required=True, type=Path)
-    parser.add_argument("--package-producer-commit", required=True)
+    parser.add_argument(
+        "--historical-package-producer-attribution",
+        required=True,
+        help=(
+            "Exact retained attribution statement; use an explicit unavailable "
+            "marker rather than guessing a historical worker commit"
+        ),
+    )
+    parser.add_argument("--input-manifest-commit", required=True)
     parser.add_argument("--enrichment-commit", required=True)
     args = parser.parse_args()
 
@@ -95,7 +103,10 @@ def main() -> int:
         "input_sha256": _sha256(args.input),
         "output": str(args.output),
         "output_sha256": _sha256(args.output),
-        "package_producer_commit": args.package_producer_commit,
+        "historical_package_producer_attribution": (
+            args.historical_package_producer_attribution
+        ),
+        "input_manifest_commit": args.input_manifest_commit,
         "enrichment_commit": args.enrichment_commit,
         "rows": len(output_rows),
         "admitted_rows": len(admitted),

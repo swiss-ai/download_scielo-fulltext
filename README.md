@@ -120,7 +120,10 @@ parsing. A release manifest without this provenance is incomplete.
 For a bounded or already materialized typed manifest, use
 `scripts/backfill_manifest_provenance.py`; it preserves the exact identity and
 status population, refuses to touch nonadmitted rows, and records the
-historical package-producer commit separately from the enrichment commit.
+historical package-producer attribution separately from the input-manifest and
+enrichment commits. If old workers did not retain their Git SHA, record that
+fact explicitly rather than assigning the later manifest commit to package
+bytes.
 
 Tar members:
 
