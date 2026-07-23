@@ -117,6 +117,11 @@ historical tars while selecting only license-admitted packages for extraction.
 The converter verifies every member and the aggregate package hash before
 parsing. A release manifest without this provenance is incomplete.
 
+For a bounded or already materialized typed manifest, use
+`scripts/backfill_manifest_provenance.py`; it preserves the exact identity and
+status population, refuses to touch nonadmitted rows, and records the
+historical package-producer commit separately from the enrichment commit.
+
 Tar members:
 
 ```text
