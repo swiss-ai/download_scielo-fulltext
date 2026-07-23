@@ -245,6 +245,8 @@ def _update_package_digest(digest: Any, member: str, data: bytes) -> None:
 def backfill_package_provenance(
     rows: list[dict[str, Any]],
     corpus: Path,
+    *,
+    stream_full_tars: bool = True,
 ) -> int:
     """Recover exact admitted-package hashes from one or more historical tars.
 
@@ -293,8 +295,18 @@ def backfill_package_provenance(
         archive_path = corpus / tar_rel
         if not archive_path.is_file():
             raise ValueError(f"missing historical package tar: {archive_path}")
-        with tarfile.open(archive_path, mode="r|") as archive:
-            for info in archive:
+        mode = "r|" if stream_full_tars else "r"
+        with tarfile.open(archive_path, mode=mode) as archive:
+            members = (
+                archive
+                if stream_full_tars
+                else (
+                    info
+                    for info in archive.getmembers()
+                    if info.name in member_owner
+                )
+            )
+            for info in members:
                 index = member_owner.get(info.name)
                 if index is None:
                     continue
@@ -411,7 +423,11 @@ def load_rows(
                     raise ValueError(
                         "corpus is required when backfill_provenance is enabled"
                     )
-                backfill_package_provenance(normalized_rows, corpus)
+                backfill_package_provenance(
+                    normalized_rows,
+                    corpus,
+                    stream_full_tars=True,
+                )
             yield from normalized_rows
     finally:
         if connection is not None:

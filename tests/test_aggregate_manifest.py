@@ -161,7 +161,14 @@ def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
         _seed(),
     )
 
-    assert backfill_package_provenance([row], tmp_path) == 1
+    assert (
+        backfill_package_provenance(
+            [row],
+            tmp_path,
+            stream_full_tars=False,
+        )
+        == 1
+    )
     assert row["source_package_hash"] == _package_hash(files)
     assert row["hashes"] == {
         member: hashlib.sha256(data).hexdigest()

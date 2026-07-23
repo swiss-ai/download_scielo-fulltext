@@ -66,7 +66,11 @@ def main() -> int:
         != set(str(value) for value in row.get("package_members") or [])
         for row in admitted
     )
-    enriched = backfill_package_provenance(rows, args.corpus_root)
+    enriched = backfill_package_provenance(
+        rows,
+        args.corpus_root,
+        stream_full_tars=False,
+    )
     incomplete = [
         str(row.get("source_id"))
         for row in rows
@@ -114,6 +118,7 @@ def main() -> int:
         "admitted_rows_enriched": enriched,
         "status_counts": dict(sorted(status_counts.items())),
         "nonadmitted_rows_unchanged": True,
+        "tar_access": "seekable_headers_plus_selected_admitted_members",
     }
     atomic_write_json(args.output.with_suffix(args.output.suffix + ".summary.json"), summary)
     print(json.dumps(summary, indent=2, sort_keys=True))
