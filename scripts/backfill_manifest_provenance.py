@@ -66,11 +66,7 @@ def main() -> int:
         != set(str(value) for value in row.get("package_members") or [])
         for row in admitted
     )
-    enriched = backfill_package_provenance(
-        rows,
-        args.corpus_root,
-        stream_full_tars=False,
-    )
+    enriched = backfill_package_provenance(rows, args.corpus_root)
     incomplete = [
         str(row.get("source_id"))
         for row in rows
@@ -100,6 +96,15 @@ def main() -> int:
     if {_identity(row) for row in output_rows} != set(identities):
         raise ValueError("output manifest identity population changed")
     status_counts = Counter(str(row.get("status") or "") for row in output_rows)
+    historical_tar_order_differed_rows = sum(
+        bool(
+            json.loads(str(row.get("source_meta_json") or "{}"))
+            .get("package_provenance_backfill", {})
+            .get("historical_tar_member_order_differed")
+        )
+        for row in output_rows
+        if manifest_row_is_convertible(row)
+    )
     summary = {
         "created_at": iso_utc_now(),
         "status": "package_provenance_backfill_complete",
@@ -116,6 +121,10 @@ def main() -> int:
         "admitted_rows": len(admitted),
         "admitted_rows_missing_before": missing_before,
         "admitted_rows_enriched": enriched,
+        "package_hash_order": "canonical_manifest_package_members",
+        "historical_tar_order_differed_rows": (
+            historical_tar_order_differed_rows
+        ),
         "status_counts": dict(sorted(status_counts.items())),
         "nonadmitted_rows_unchanged": True,
         "tar_access": "seekable_headers_plus_selected_admitted_members",

@@ -161,14 +161,7 @@ def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
         _seed(),
     )
 
-    assert (
-        backfill_package_provenance(
-            [row],
-            tmp_path,
-            stream_full_tars=False,
-        )
-        == 1
-    )
+    assert backfill_package_provenance([row], tmp_path) == 1
     assert row["source_package_hash"] == _package_hash(files)
     assert row["hashes"] == {
         member: hashlib.sha256(data).hexdigest()
@@ -178,8 +171,81 @@ def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
     assert row["total_bytes"] == sum(len(data) for _member, data in files)
     evidence = json.loads(row["source_meta_json"])
     assert evidence["package_provenance_backfill"]["method"] == (
-        "streamed_tar_member_hash_v1"
+        "canonical_manifest_order_tar_member_hash_v2"
     )
+    assert evidence["package_provenance_backfill"]["package_hash_order"] == (
+        "manifest_package_members"
+    )
+    assert evidence["package_provenance_backfill"][
+        "historical_tar_member_order"
+    ] == [member for member, _data in files]
+    assert evidence["package_provenance_backfill"][
+        "historical_tar_member_order_differed"
+    ] is False
+
+
+def test_backfill_package_hash_uses_canonical_not_physical_tar_order(tmp_path):
+    canonical_files = [
+        ("scielo-scl-S0001/article.xml", b"<article/>"),
+        ("scielo-scl-S0001/source.json", b'{"source":"scielo"}\n'),
+        ("scielo-scl-S0001/figure-000.jpg", b"\xff\xd8figure\xff\xd9"),
+    ]
+    physical_files = [canonical_files[1], canonical_files[0], canonical_files[2]]
+    tar_path = tmp_path / "data/shard-01/sub-002.tar"
+    tar_path.parent.mkdir(parents=True)
+    with tarfile.open(tar_path, "w") as archive:
+        for member, data in physical_files:
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    row = normalize_record(
+        _worker(
+            package_members=[member for member, _data in canonical_files],
+            figures=[
+                {
+                    "status": "ok",
+                    "member": "scielo-scl-S0001/figure-000.jpg",
+                }
+            ],
+            expected_figure_files=1,
+            downloaded_figure_files=1,
+        ),
+        _seed(),
+    )
+
+    assert backfill_package_provenance([row], tmp_path) == 1
+    assert row["source_package_hash"] == _package_hash(canonical_files)
+    evidence = json.loads(row["source_meta_json"])[
+        "package_provenance_backfill"
+    ]
+    assert evidence["historical_tar_member_order"] == [
+        member for member, _data in physical_files
+    ]
+    assert evidence["historical_tar_member_order_differed"] is True
+
+
+def test_backfill_rejects_unmanifested_file_in_package_root(tmp_path):
+    files = [
+        ("scielo-scl-S0001/article.xml", b"<article/>"),
+        ("scielo-scl-S0001/source.json", b'{"source":"scielo"}\n'),
+        ("scielo-scl-S0001/unmanifested.bin", b"hidden"),
+    ]
+    tar_path = tmp_path / "data/shard-01/sub-002.tar"
+    tar_path.parent.mkdir(parents=True)
+    with tarfile.open(tar_path, "w") as archive:
+        for member, data in files:
+            info = tarfile.TarInfo(member)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    row = normalize_record(_worker(), _seed())
+
+    try:
+        backfill_package_provenance([row], tmp_path)
+    except ValueError as error:
+        assert "unmanifested tar members" in str(error)
+        assert "unmanifested.bin" in str(error)
+    else:
+        raise AssertionError("unmanifested package file was accepted")
 
 
 def test_backfill_never_extracts_rejected_package(tmp_path):

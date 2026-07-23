@@ -245,13 +245,13 @@ def _update_package_digest(digest: Any, member: str, data: bytes) -> None:
 def backfill_package_provenance(
     rows: list[dict[str, Any]],
     corpus: Path,
-    *,
-    stream_full_tars: bool = True,
 ) -> int:
     """Recover exact admitted-package hashes from one or more historical tars.
 
     License admission has already run in ``normalize_record``. Rejected and
-    quarantined package members are never selected for extraction here.
+    quarantined package members are never selected for extraction here. The
+    package identity follows the canonical ``package_members`` order rather
+    than incidental physical tar order. The latter is retained as provenance.
     """
 
     grouped: dict[str, list[int]] = defaultdict(list)
@@ -272,19 +272,25 @@ def backfill_package_provenance(
     for tar_rel in sorted(grouped):
         indexes = grouped[tar_rel]
         member_owner: dict[str, int] = {}
-        states: dict[int, dict[str, Any]] = {}
+        package_root_owner: dict[str, int] = {}
         for index in indexes:
             expected = [
                 str(value) for value in rows[index].get("package_members") or []
             ]
-            states[index] = {
-                "expected": expected,
-                "observed": [],
-                "hashes": {},
-                "total_bytes": 0,
-                "digest": hashlib.sha256(),
-                "identical_duplicates": 0,
-            }
+            package_root = expected[0].split("/", 1)[0]
+            if not package_root or any(
+                not member.startswith(f"{package_root}/")
+                for member in expected
+            ):
+                raise ValueError(
+                    f"{rows[index].get('source_id')}: package members do not "
+                    "share one archive root"
+                )
+            if package_root in package_root_owner:
+                raise ValueError(
+                    f"duplicate package archive root: {package_root}"
+                )
+            package_root_owner[package_root] = index
             for member in expected:
                 if member in member_owner:
                     raise ValueError(
@@ -295,66 +301,83 @@ def backfill_package_provenance(
         archive_path = corpus / tar_rel
         if not archive_path.is_file():
             raise ValueError(f"missing historical package tar: {archive_path}")
-        mode = "r|" if stream_full_tars else "r"
-        with tarfile.open(archive_path, mode=mode) as archive:
-            members = (
-                archive
-                if stream_full_tars
-                else (
-                    info
-                    for info in archive.getmembers()
-                    if info.name in member_owner
-                )
-            )
-            for info in members:
-                index = member_owner.get(info.name)
-                if index is None:
-                    continue
-                source = archive.extractfile(info)
-                if source is None:
-                    raise ValueError(
-                        f"unreadable package member: {tar_rel}:{info.name}"
-                    )
-                data = source.read()
-                state = states[index]
-                member_sha256 = hashlib.sha256(data).hexdigest()
-                if info.name in state["hashes"]:
-                    if state["hashes"][info.name] != member_sha256:
-                        raise ValueError(
-                            f"{rows[index].get('source_id')}: duplicate tar "
-                            f"member has different bytes: {tar_rel}:{info.name}"
-                        )
-                    state["identical_duplicates"] += 1
-                    continue
-                state["observed"].append(info.name)
-                state["hashes"][info.name] = member_sha256
-                state["total_bytes"] += len(data)
-                _update_package_digest(state["digest"], info.name, data)
+        with tarfile.open(archive_path, mode="r") as archive:
+            tar_members = archive.getmembers()
+            infos_by_name: dict[str, list[tarfile.TarInfo]] = defaultdict(list)
+            for info in tar_members:
+                if info.isfile() and info.name in member_owner:
+                    infos_by_name[info.name].append(info)
 
-        for index in indexes:
-            row = rows[index]
-            state = states[index]
-            if state["observed"] != state["expected"]:
-                raise ValueError(
-                    f"{row.get('source_id')}: tar members differ: "
-                    f"expected={state['expected']!r} "
-                    f"observed={state['observed']!r}"
+            for index in indexes:
+                row = rows[index]
+                expected = [
+                    str(value) for value in row.get("package_members") or []
+                ]
+                observed = [
+                    info.name
+                    for info in tar_members
+                    if info.isfile()
+                    and package_root_owner.get(info.name.split("/", 1)[0])
+                    == index
+                ]
+                unexpected = sorted(set(observed).difference(expected))
+                if unexpected:
+                    raise ValueError(
+                        f"{row.get('source_id')}: unmanifested tar members: "
+                        f"{unexpected!r}"
+                    )
+                hashes: dict[str, str] = {}
+                total_bytes = 0
+                digest = hashlib.sha256()
+                identical_duplicates = 0
+                for member in expected:
+                    infos = infos_by_name.get(member) or []
+                    if not infos:
+                        raise ValueError(
+                            f"{row.get('source_id')}: missing tar member: "
+                            f"{tar_rel}:{member}"
+                        )
+                    source = archive.extractfile(infos[0])
+                    if source is None:
+                        raise ValueError(
+                            f"unreadable package member: {tar_rel}:{member}"
+                        )
+                    data = source.read()
+                    for duplicate in infos[1:]:
+                        duplicate_source = archive.extractfile(duplicate)
+                        if duplicate_source is None:
+                            raise ValueError(
+                                f"unreadable duplicate package member: "
+                                f"{tar_rel}:{member}"
+                            )
+                        if duplicate_source.read() != data:
+                            raise ValueError(
+                                f"{row.get('source_id')}: duplicate tar "
+                                f"member has different bytes: {tar_rel}:{member}"
+                            )
+                        identical_duplicates += 1
+                    hashes[member] = hashlib.sha256(data).hexdigest()
+                    total_bytes += len(data)
+                    _update_package_digest(digest, member, data)
+
+                row["hashes"] = hashes
+                row["total_bytes"] = total_bytes
+                row["file_count"] = len(expected)
+                row["source_package_hash"] = digest.hexdigest()
+                source_meta = json.loads(row.get("source_meta_json") or "{}")
+                source_meta["package_provenance_backfill"] = {
+                    "method": "canonical_manifest_order_tar_member_hash_v2",
+                    "package_hash_order": "manifest_package_members",
+                    "historical_tar_member_order": observed,
+                    "historical_tar_member_order_differed": observed != expected,
+                    "identical_duplicate_tar_members_ignored": (
+                        identical_duplicates
+                    ),
+                }
+                row["source_meta_json"] = json.dumps(
+                    source_meta, ensure_ascii=False, sort_keys=True
                 )
-            row["hashes"] = state["hashes"]
-            row["total_bytes"] = state["total_bytes"]
-            row["file_count"] = len(state["observed"])
-            row["source_package_hash"] = state["digest"].hexdigest()
-            source_meta = json.loads(row.get("source_meta_json") or "{}")
-            source_meta["package_provenance_backfill"] = {
-                "method": "streamed_tar_member_hash_v1",
-                "identical_duplicate_tar_members_ignored": state[
-                    "identical_duplicates"
-                ],
-            }
-            row["source_meta_json"] = json.dumps(
-                source_meta, ensure_ascii=False, sort_keys=True
-            )
-            enriched += 1
+                enriched += 1
     return enriched
 
 
@@ -426,7 +449,6 @@ def load_rows(
                 backfill_package_provenance(
                     normalized_rows,
                     corpus,
-                    stream_full_tars=True,
                 )
             yield from normalized_rows
     finally:
