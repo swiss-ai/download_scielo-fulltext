@@ -30,6 +30,40 @@ def _identity(row: dict[str, object]) -> tuple[str, str]:
     return str(row.get("source") or ""), str(row.get("source_id") or "")
 
 
+def bind_backfill_attribution(
+    rows: list[dict[str, object]],
+    *,
+    historical_package_producer_attribution: str,
+    input_manifest_commit: str,
+    input_manifest_sha256: str,
+    enrichment_commit: str,
+) -> None:
+    """Bind historical-package and enrichment lineage to every admitted row."""
+
+    for row in rows:
+        if not manifest_row_is_convertible(row):
+            continue
+        source_meta = json.loads(str(row.get("source_meta_json") or "{}"))
+        backfill = source_meta.get("package_provenance_backfill")
+        if not isinstance(backfill, dict):
+            raise ValueError(
+                f"{row.get('source_id')}: package backfill evidence is missing"
+            )
+        backfill.update(
+            {
+                "historical_package_producer_attribution": (
+                    historical_package_producer_attribution
+                ),
+                "input_manifest_commit": input_manifest_commit,
+                "input_manifest_sha256": input_manifest_sha256,
+                "enrichment_commit": enrichment_commit,
+            }
+        )
+        row["source_meta_json"] = json.dumps(
+            source_meta, ensure_ascii=False, sort_keys=True
+        )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--input", required=True, type=Path)
@@ -49,6 +83,7 @@ def main() -> int:
 
     if args.output.exists():
         raise FileExistsError(f"refusing existing output: {args.output}")
+    input_manifest_sha256 = _sha256(args.input)
     rows = pq.read_table(args.input).to_pylist()
     identities = [_identity(row) for row in rows]
     if len(identities) != len(set(identities)):
@@ -67,6 +102,15 @@ def main() -> int:
         for row in admitted
     )
     enriched = backfill_package_provenance(rows, args.corpus_root)
+    bind_backfill_attribution(
+        rows,
+        historical_package_producer_attribution=(
+            args.historical_package_producer_attribution
+        ),
+        input_manifest_commit=args.input_manifest_commit,
+        input_manifest_sha256=input_manifest_sha256,
+        enrichment_commit=args.enrichment_commit,
+    )
     incomplete = [
         str(row.get("source_id"))
         for row in rows
@@ -109,7 +153,7 @@ def main() -> int:
         "created_at": iso_utc_now(),
         "status": "package_provenance_backfill_complete",
         "input": str(args.input),
-        "input_sha256": _sha256(args.input),
+        "input_sha256": input_manifest_sha256,
         "output": str(args.output),
         "output_sha256": _sha256(args.output),
         "historical_package_producer_attribution": (

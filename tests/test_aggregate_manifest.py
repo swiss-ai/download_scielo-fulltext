@@ -15,6 +15,7 @@ from aggregate_manifest import (  # noqa: E402
     load_rows,
     normalize_record,
 )
+from backfill_manifest_provenance import bind_backfill_attribution  # noqa: E402
 
 
 def _seed(**updates):
@@ -182,6 +183,22 @@ def test_backfill_package_provenance_hashes_admitted_exact_members(tmp_path):
     assert evidence["package_provenance_backfill"][
         "historical_tar_member_order_differed"
     ] is False
+    bind_backfill_attribution(
+        [row],
+        historical_package_producer_attribution="historical-commit-unavailable",
+        input_manifest_commit="manifest-commit",
+        input_manifest_sha256="a" * 64,
+        enrichment_commit="enrichment-commit",
+    )
+    evidence = json.loads(row["source_meta_json"])[
+        "package_provenance_backfill"
+    ]
+    assert evidence["historical_package_producer_attribution"] == (
+        "historical-commit-unavailable"
+    )
+    assert evidence["input_manifest_commit"] == "manifest-commit"
+    assert evidence["input_manifest_sha256"] == "a" * 64
+    assert evidence["enrichment_commit"] == "enrichment-commit"
 
 
 def test_backfill_package_hash_uses_canonical_not_physical_tar_order(tmp_path):
