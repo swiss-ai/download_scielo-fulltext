@@ -73,6 +73,15 @@ def _new_database(path: Path) -> sqlite3.Connection:
     connection.execute("PRAGMA temp_store=FILE")
     connection.execute(
         """
+        CREATE TABLE identities (
+            source TEXT NOT NULL,
+            source_id TEXT NOT NULL,
+            PRIMARY KEY (source, source_id)
+        )
+        """
+    )
+    connection.execute(
+        """
         CREATE TABLE admitted (
             source TEXT NOT NULL,
             source_id TEXT NOT NULL,
@@ -95,7 +104,6 @@ def _stage_admitted(
     status_counts: Counter[str] = Counter()
     rows = 0
     admitted = 0
-    previous: tuple[str, str] | None = None
     identity_digest = hashlib.sha256()
     nonadmitted_digest = hashlib.sha256()
     connection.execute("BEGIN")
@@ -104,10 +112,15 @@ def _stage_admitted(
             identity = _identity(row)
             if not all(identity):
                 raise ValueError(f"manifest row has incomplete identity: {identity!r}")
-            if previous is not None and identity <= previous:
-                relation = "duplicate" if identity == previous else "out of order"
-                raise ValueError(f"{relation} manifest identity: {identity!r}")
-            previous = identity
+            try:
+                connection.execute(
+                    "INSERT INTO identities VALUES (?, ?)",
+                    identity,
+                )
+            except sqlite3.IntegrityError as error:
+                raise ValueError(
+                    f"duplicate manifest identity: {identity!r}"
+                ) from error
             rows += 1
             status_counts[str(row.get("status") or "")] += 1
             _update_framed_digest(identity_digest, "\0".join(identity))
@@ -267,16 +280,11 @@ def _verify_output(
     rows = 0
     admitted = 0
     status_counts: Counter[str] = Counter()
-    previous: tuple[str, str] | None = None
     identity_digest = hashlib.sha256()
     nonadmitted_digest = hashlib.sha256()
     order_differed = 0
     for row in _iter_rows(output_path, batch_size=batch_size):
         identity = _identity(row)
-        if previous is not None and identity <= previous:
-            relation = "duplicate" if identity == previous else "out of order"
-            raise ValueError(f"{relation} output identity: {identity!r}")
-        previous = identity
         rows += 1
         status_counts[str(row.get("status") or "")] += 1
         _update_framed_digest(identity_digest, "\0".join(identity))
@@ -374,7 +382,7 @@ def backfill_manifest_bounded(
             _merged_rows(input_path, connection, batch_size=batch_size),
             output_path,
             batch_size=batch_size,
-            identity_check="ordered",
+            identity_check="prevalidated",
         )
         if written != staged["rows"]:
             raise ValueError(

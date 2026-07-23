@@ -253,6 +253,8 @@ def test_bounded_backfill_preserves_rejected_rows_and_enriches_admitted(tmp_path
     input_path = tmp_path / "input.parquet"
     output_path = tmp_path / "output.parquet"
     write_manifest_parquet([rejected, accepted], input_path)
+    sorted_table = pq.read_table(input_path)
+    pq.write_table(sorted_table.take([1, 0]), input_path)
     rejected_json = json.dumps(
         next(
             row
