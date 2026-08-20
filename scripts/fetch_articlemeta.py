@@ -1,25 +1,26 @@
 #!/usr/bin/env python3
 """Fetch per-article ArticleMeta records with fulltext links."""
+
 from __future__ import annotations
 
 import argparse
-import concurrent.futures
 import collections
+import concurrent.futures
 import gzip
 import json
 import os
 import re
 import uuid
-from pathlib import Path
 from http.client import IncompleteRead
+from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 
 from common import (
     ProxyPool,
     build_user_agent,
-    contact_email_from_env,
     compact_json,
+    contact_email_from_env,
     fetch_bytes,
     iso_utc_now,
     log,
@@ -138,12 +139,14 @@ def fetch_articlemeta_row(
             timeout=timeout,
             retries=retries,
         )
-        row.update({
-            "status": "ok",
-            "http_status": status,
-            "final_url": final_url,
-            "articlemeta": json.loads(data.decode("utf-8")),
-        })
+        row.update(
+            {
+                "status": "ok",
+                "http_status": status,
+                "final_url": final_url,
+                "articlemeta": json.loads(data.decode("utf-8")),
+            }
+        )
     except HTTPError as e:
         row.update({"status": "http_error", "http_status": e.code, "error": f"HTTP {e.code}"})
     except (URLError, TimeoutError, OSError, IncompleteRead, json.JSONDecodeError) as e:
@@ -158,8 +161,12 @@ def main() -> None:
     p.add_argument("--limit", type=int)
     p.add_argument("--n-shards", type=int, default=1)
     p.add_argument("--shard-id", type=int, default=0)
-    p.add_argument("--sub-shards", type=int, default=int(os.environ.get("ARTICLEMETA_SUB_SHARDS", "1")))
-    p.add_argument("--sub-shard-id", type=int, default=int(os.environ.get("ARTICLEMETA_SUB_SHARD_ID", "0")))
+    p.add_argument(
+        "--sub-shards", type=int, default=int(os.environ.get("ARTICLEMETA_SUB_SHARDS", "1"))
+    )
+    p.add_argument(
+        "--sub-shard-id", type=int, default=int(os.environ.get("ARTICLEMETA_SUB_SHARD_ID", "0"))
+    )
     p.add_argument("--request-timeout", type=int, default=90)
     p.add_argument("--retries", type=int, default=3)
     p.add_argument("--rpm-per-proxy", type=int, default=int(os.environ.get("RPM_PER_PROXY", "10")))
@@ -238,7 +245,10 @@ def main() -> None:
                     continue
                 if args.n_shards > 1 and stable_shard(key, args.n_shards) != args.shard_id:
                     continue
-                if args.sub_shards > 1 and stable_sub_shard(key, args.sub_shards) != args.sub_shard_id:
+                if (
+                    args.sub_shards > 1
+                    and stable_sub_shard(key, args.sub_shards) != args.sub_shard_id
+                ):
                     continue
                 done_keys.add(key)
                 counters[row.get("status") or "unknown"] += 1
@@ -254,7 +264,10 @@ def main() -> None:
                 key = article_key(collection, code)
                 if args.n_shards > 1 and stable_shard(key, args.n_shards) != args.shard_id:
                     continue
-                if args.sub_shards > 1 and stable_sub_shard(key, args.sub_shards) != args.sub_shard_id:
+                if (
+                    args.sub_shards > 1
+                    and stable_sub_shard(key, args.sub_shards) != args.sub_shard_id
+                ):
                     continue
                 if args.limit is not None and selected_seen >= args.limit:
                     break
@@ -319,21 +332,29 @@ def main() -> None:
             resume_path.unlink()
         except FileNotFoundError:
             pass
-    summary_path.write_text(json.dumps({
-        "created_at": iso_utc_now(),
-        "output": str(output),
-        "rows_written": written,
-        "rows_restored": restored,
-        "rows_fetched_this_run": fetched_this_run,
-        "selected_identifiers": selected_seen,
-        "workers": args.workers,
-        "prefetch_per_worker": args.prefetch_per_worker,
-        "status_counts": dict(counters),
-        "n_shards": args.n_shards,
-        "shard_id": args.shard_id,
-        "sub_shards": args.sub_shards,
-        "sub_shard_id": args.sub_shard_id,
-    }, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    summary_path.write_text(
+        json.dumps(
+            {
+                "created_at": iso_utc_now(),
+                "output": str(output),
+                "rows_written": written,
+                "rows_restored": restored,
+                "rows_fetched_this_run": fetched_this_run,
+                "selected_identifiers": selected_seen,
+                "workers": args.workers,
+                "prefetch_per_worker": args.prefetch_per_worker,
+                "status_counts": dict(counters),
+                "n_shards": args.n_shards,
+                "shard_id": args.shard_id,
+                "sub_shards": args.sub_shards,
+                "sub_shard_id": args.sub_shard_id,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
     log(f"wrote {written} rows to {output}")
     log(f"summary: {summary_path}")
 

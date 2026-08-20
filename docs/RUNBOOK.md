@@ -6,6 +6,7 @@
 export PROXY_FILE=/path/to/proxies.txt
 export SCIELO_CONTACT_EMAIL=you@example.org
 export RPM_PER_PROXY=10
+export IMAGE='registry.rcp.epfl.ch/scielo-fulltext/downloader@sha256:<digest>'
 ```
 
 No external-fetch script runs without a proxy.
@@ -87,16 +88,26 @@ python3 scripts/verify_shard.py \
 ## 5. Aggregate And Estimate
 
 ```bash
-python3 scripts/aggregate_manifest.py --corpus-root "$CORPUS_ROOT"
+uv run python scripts/aggregate_manifest.py \
+  --corpus-root "$CORPUS_ROOT" \
+  --backfill-package-provenance
 
-python3 scripts/estimate_volume.py \
-  --manifest "$CORPUS_ROOT/manifest.jsonl" \
+uv run python scripts/estimate_volume.py \
+  --manifest "$CORPUS_ROOT/manifest.parquet" \
   --total-identifiers 1409144
 ```
 
 Use `ok` and `no_figures` as complete accepted statuses. Retry
 `partial_figures` and `figures_failed`; do not publish them as complete
 figure-inclusive content.
+
+Verify `manifest.parquet.summary.json`, its SHA-256, exact seed/final row
+reconciliation, and unique identities. Restrictive, missing, or unknown
+licenses remain audit rows and are never converter work items.
+
+The release manifest must have `source_package_hash`, full member-keyed
+`hashes`, `file_count`, and `total_bytes` for every admitted row. Historical
+backfill streams each subtar once and does not select rejected package members.
 
 ## 6. Recovery
 

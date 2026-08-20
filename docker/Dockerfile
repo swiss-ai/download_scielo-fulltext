@@ -2,12 +2,16 @@
 #
 # Extends mlo-base with Pillow so figure workers can render large SciELO TIFF
 # originals to bounded JPEG derivatives before tar packing.
-ARG BASE_IMAGE=ic-registry.epfl.ch/mlo/mlo-base:uv1
+ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
+
+ARG SOURCE_COMMIT
 
 LABEL org.opencontainers.image.authors="Swiss AI"
 LABEL org.opencontainers.image.source="https://github.com/swiss-ai/download_scielo-fulltext"
 LABEL org.opencontainers.image.description="mlo-base + Pillow for swiss-ai/download_scielo-fulltext"
+LABEL org.opencontainers.image.revision="${SOURCE_COMMIT}"
 
-RUN /usr/local/bin/uv pip install --system --no-cache-dir \
-      'Pillow>=10,<13'
+RUN test -n "${SOURCE_COMMIT}" \
+      && /usr/local/bin/uv pip install --system --no-cache-dir \
+      'Pillow==12.3.0'

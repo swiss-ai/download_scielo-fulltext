@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Tiny XML probe wrapper for an existing manifest seed."""
+
 from __future__ import annotations
 
 import argparse
-import tempfile
 from pathlib import Path
 
 from common import read_jsonl, write_jsonl

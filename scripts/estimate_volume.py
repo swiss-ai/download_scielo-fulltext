@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 """Estimate full SciELO XML + figure volume from a manifest sample."""
+
 from __future__ import annotations
 
 import argparse
@@ -9,7 +10,6 @@ from collections import Counter
 from pathlib import Path
 
 from common import read_jsonl
-
 
 COMPLETE_ACCEPTED = {"ok", "no_figures"}
 PACKAGED_INCOMPLETE = {"partial_figures", "figures_failed"}
@@ -23,19 +23,37 @@ def median(vals: list[int]) -> float:
     return statistics.median(vals) if vals else 0.0
 
 
+def read_manifest(path: Path) -> list[dict]:
+    if path.suffix != ".parquet":
+        return list(read_jsonl(path))
+    import pyarrow.parquet as pq
+
+    rows = []
+    parquet = pq.ParquetFile(path)
+    for batch in parquet.iter_batches(columns=["source_status", "source_meta_json"]):
+        for canonical in batch.to_pylist():
+            evidence = json.loads(canonical.get("source_meta_json") or "{}")
+            worker = dict(evidence.get("worker_record") or {})
+            worker["status"] = canonical.get("source_status") or worker.get("status")
+            rows.append(worker)
+    return rows
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--manifest", required=True)
     p.add_argument("--total-identifiers", type=int, default=1409144)
     args = p.parse_args()
 
-    rows = list(read_jsonl(Path(args.manifest)))
+    rows = read_manifest(Path(args.manifest))
     counts = Counter(r.get("status", "unknown") for r in rows)
     complete = [r for r in rows if r.get("status") in COMPLETE_ACCEPTED]
     incomplete = [r for r in rows if r.get("status") in PACKAGED_INCOMPLETE]
     xml = [int(r.get("xml_bytes") or 0) for r in complete if int(r.get("xml_bytes") or 0) > 0]
     fig_bytes = [int(r.get("figure_bytes") or 0) for r in complete]
-    original_fig_bytes = [int(r.get("original_figure_bytes") or r.get("figure_bytes") or 0) for r in complete]
+    original_fig_bytes = [
+        int(r.get("original_figure_bytes") or r.get("figure_bytes") or 0) for r in complete
+    ]
     fig_counts = [int(r.get("expected_figure_files") or 0) for r in complete]
     rendered_counts = [int(r.get("rendered_figure_files") or 0) for r in complete]
     complete_fraction = len(complete) / len(rows) if rows else 0.0
@@ -63,9 +81,14 @@ def main() -> None:
         "rendered_figures_per_article_median": median(rendered_counts),
         "projected_xml_gb": round(projected_complete * mean(xml) / 1e9, 2),
         "projected_figure_gb": round(projected_complete * mean(fig_bytes) / 1e9, 2),
-        "projected_original_figure_gb": round(projected_complete * mean(original_fig_bytes) / 1e9, 2),
+        "projected_original_figure_gb": round(
+            projected_complete * mean(original_fig_bytes) / 1e9, 2
+        ),
         "projected_total_gb": round(projected_complete * (mean(xml) + mean(fig_bytes)) / 1e9, 2),
-        "note": "Projection uses only complete figure-inclusive accepted rows: ok and no_figures. partial_figures and figures_failed are reported separately.",
+        "note": (
+            "Projection uses only complete figure-inclusive accepted rows: ok and no_figures. "
+            "partial_figures and figures_failed are reported separately."
+        ),
     }
     print(json.dumps(out, indent=2, sort_keys=True))
 

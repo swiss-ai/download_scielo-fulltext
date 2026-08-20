@@ -4,7 +4,7 @@
 set -euo pipefail
 
 RUNAI_PROJECT="${RUNAI_PROJECT:-mlo-shcherba}"
-IMAGE="${IMAGE:-ic-registry.epfl.ch/mlo/mlo-base:uv1}"
+IMAGE="${IMAGE:-}"
 PVC="${PVC:-mlo-scratch:/mloscratch}"
 CORPUS_ROOT="${CORPUS_ROOT:-/mloscratch/scielo-fulltext}"
 RCP_USER="${RCP_USER:-${USER:-}}"
@@ -44,7 +44,7 @@ Options:
   --yes-all                 Submit all shard IDs 0..N_SHARDS-1
   --wait-for-identifiers    Let pods wait until identifier harvest is complete
   --project NAME            Run:ai project (default: ${RUNAI_PROJECT})
-  --image IMG               Container image (default: ${IMAGE})
+  --image IMG               Required digest-pinned runtime image
   --n-shards N              Number of ArticleMeta shards (default: ${N_SHARDS})
   --job-prefix PREFIX       Job name prefix (default: ${JOB_PREFIX})
   --cpus N                  CPU request per pod (default: ${CPUS_PER_POD})
@@ -80,6 +80,12 @@ while [[ $# -gt 0 ]]; do
     *) EXPLICIT_IDS+=("$1"); shift ;;
   esac
 done
+
+: "${IMAGE:?IMAGE is required and must be pinned by sha256 digest}"
+if [[ "${IMAGE}" != *@sha256:* ]]; then
+  echo "ERROR: IMAGE must be pinned by sha256 digest; mutable tags are not allowed." >&2
+  exit 1
+fi
 
 if [[ -n "${PROXY_URL:-}" ]]; then
   echo "ERROR: PROXY_URL is set locally; inline proxy credentials are not submitted." >&2
